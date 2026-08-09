@@ -3,9 +3,288 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Pie Menu Editor Fork is the actively maintained continuation of Pie Menu Editor for Blender 5.0 and later.">
+  <link rel="canonical" href="https://pie-menu-editor.com/">
   <title>Pie Menu Editor Fork</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --background: #cbcbc7;
+      --text: #181818;
+      --muted: #575755;
+      --line: #bdbdb8;
+      --accent: #d9545c;
+      --accent-hover: #b93b43;
+      --link: #171c52;
+      --content-width: 760px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      min-height: 100%;
+      font-family: "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif;
+      line-height: 1.6;
+      background:
+        radial-gradient(circle at 50% 15%, #fdfdfb 0, #f1f1ee 23rem, #e2e2de 45rem, transparent 69rem),
+        var(--background);
+      color: var(--text);
+    }
+
+    body {
+      margin: 0;
+    }
+
+    a {
+      color: var(--link);
+      text-decoration-color: rgb(23 28 82 / 42%);
+      text-decoration-thickness: 0.08em;
+      text-underline-offset: 0.2em;
+    }
+
+    a:hover {
+      color: var(--accent-hover);
+      text-decoration-color: currentcolor;
+    }
+
+    .wrap {
+      width: min(calc(100% - 2.5rem), var(--content-width));
+      margin-inline: auto;
+    }
+
+    header {
+      border-bottom: 1px solid var(--line);
+      background: rgb(255 255 255 / 18%);
+    }
+
+    header .wrap {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      min-height: 4.5rem;
+      gap: 1rem;
+    }
+
+    .brand {
+      color: var(--text);
+      font-weight: 700;
+      text-decoration: none;
+      letter-spacing: -0.02em;
+    }
+
+    nav {
+      display: flex;
+      gap: 1rem;
+      font-size: 0.95rem;
+    }
+
+    main {
+      padding-block: clamp(4rem, 10vw, 7rem);
+    }
+
+    .eyebrow {
+      margin: 0 0 1rem;
+      color: var(--accent);
+      font-size: 0.85rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      max-width: 13ch;
+      margin: 0;
+      font-size: clamp(2.7rem, 9vw, 5.4rem);
+      line-height: 0.98;
+      letter-spacing: -0.055em;
+    }
+
+    .letter-gap-ie {
+      margin-left: 0.034em;
+    }
+
+    .letter-gap-small {
+      margin-left: 0.023em;
+    }
+
+    .letter-tight-small {
+      margin-left: -0.023em;
+    }
+
+    .letter-gap-rk {
+      margin-left: 0.045em;
+    }
+
+    .tagline {
+      max-width: 640px;
+      margin: 1.75rem 0 0;
+      color: var(--text);
+      font-size: clamp(1.3rem, 3vw, 1.7rem);
+      font-weight: 600;
+      letter-spacing: -0.025em;
+    }
+
+    .intro {
+      max-width: 640px;
+      margin: 0.6rem 0 0;
+      color: var(--muted);
+      font-size: clamp(1rem, 2.2vw, 1.18rem);
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      margin: 2rem 0 2.25rem;
+    }
+
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 2.9rem;
+      padding: 0.65rem 1rem;
+      border: 1px solid var(--line);
+      border-radius: 0.45rem;
+      color: var(--text);
+      font-weight: 700;
+      text-decoration: none;
+      background: rgb(255 255 255 / 35%);
+    }
+
+    .button.primary {
+      border-color: var(--text);
+      background: var(--text);
+      color: #ffffff;
+    }
+
+    .button.primary:hover {
+      border-color: #343434;
+      background: #343434;
+      color: #ffffff;
+    }
+
+    .button:focus-visible,
+    a:focus-visible {
+      outline: 3px solid rgb(217 84 92 / 42%);
+      outline-offset: 3px;
+    }
+
+    section {
+      padding-block: 2.5rem;
+      border-top: 1px solid var(--line);
+    }
+
+    h2 {
+      margin: 0 0 1rem;
+      font-size: 1.35rem;
+      letter-spacing: -0.02em;
+    }
+
+    section p {
+      margin: 0.75rem 0;
+      color: var(--muted);
+    }
+
+    ul {
+      margin: 1rem 0 0;
+      padding-left: 1.25rem;
+    }
+
+    li + li {
+      margin-top: 0.5rem;
+    }
+
+    footer {
+      padding-block: 2rem 3rem;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    @media (max-width: 520px) {
+      header .wrap {
+        align-items: flex-start;
+        flex-direction: column;
+        justify-content: center;
+        padding-block: 1rem;
+      }
+
+      main {
+        padding-top: 3.5rem;
+      }
+    }
+  </style>
 </head>
 <body>
-  <h1>Pie Menu Editor Fork</h1>
+  <header>
+    <div class="wrap">
+      <a class="brand" href="/">PME-F</a>
+      <nav aria-label="Primary navigation">
+        <a href="#about">About</a>
+        <a href="#history">History</a>
+        <a href="mailto:Support@pie-menu-editor.com">Support</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <p class="eyebrow">Made for Blender 5.0+</p>
+    <h1>Pi<span class="letter-gap-ie">e</span> M<span class="letter-gap-small">e</span>nu Editor<br>F<span class="letter-tight-small">o</span><span class="letter-gap-small">r</span><span class="letter-gap-rk">k</span></h1>
+    <p class="tagline">Shape your workflow, then lose yourself in creation.</p>
+    <p class="intro">
+      Create custom menus, panels, shortcuts, macros, and properties in one place.
+      Start without code; use Python only when you need it.
+    </p>
+
+    <div class="actions">
+      <a class="button primary" href="https://pluglug.gumroad.com/l/pie-menu-editor-fork">Buy on Gumroad</a>
+      <a class="button" href="https://pluglug.github.io/pme-docs/support_community/changelog.html#changelog-2-0-0">See what changed</a>
+    </div>
+
+    <section id="about">
+      <h2>About PME-F</h2>
+      <p>
+        Pie Menu Editor Fork helps Blender users shape the interface around their own work.
+        It continues the flexibility of the original add-on while focusing on current Blender
+        compatibility and long-term maintenance.
+      </p>
+      <ul>
+        <li>Create pie menus and other custom UI without building an add-on from scratch.</li>
+        <li>Bring frequently used Blender actions into faster, personal workflows.</li>
+        <li>Use the actively developed 2.x line with Blender 5.0 and later.</li>
+      </ul>
+    </section>
+
+    <section id="history">
+      <h2>Project history</h2>
+      <p>
+        PME-F is built for continuity: keeping established workflows usable while moving
+        forward with Blender.
+      </p>
+      <p>
+        Pie Menu Editor was originally created by
+        <a href="https://github.com/roaoao">roaoao</a> in 2016. PME-F began as a maintenance
+        fork and now continues separately as the commercial 2.x line.
+      </p>
+      <p>
+        The completed 1.x maintenance line remains available as a
+        <a href="https://github.com/Pluglug/pie-menu-editor-fork">public GPL archive</a>
+        for legacy users and source review.
+      </p>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <span>Pie Menu Editor Fork</span>
+      &middot;
+      <a href="https://blenderartists.org/t/pie-menu-editor-2-0-2/662456/5701?u=pluglug">Blender Artists</a>
+      &middot;
+      <a href="mailto:Support@pie-menu-editor.com">Support</a>
+    </div>
+  </footer>
 </body>
 </html>
