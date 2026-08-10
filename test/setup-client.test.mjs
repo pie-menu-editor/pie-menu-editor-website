@@ -193,9 +193,10 @@ test("generated setup output pins final script and style bytes", async () => {
 });
 
 test("generated output is isolated, exact-origin, and deny-by-default", async () => {
-  const [html, headers, files, apexSetup, sourceFiles] = await Promise.all([
+  const [html, headers, application, files, apexSetup, sourceFiles] = await Promise.all([
     readFile(new URL("index.html", output), "utf8"),
     readFile(new URL("_headers", output), "utf8"),
+    readFile(new URL("app.mjs", output), "utf8"),
     readdir(output),
     readFile(new URL("setup/index.html", root), "utf8"),
     readdir(new URL("credential-setup/", root)),
@@ -216,6 +217,13 @@ test("generated output is isolated, exact-origin, and deny-by-default", async ()
   assert.doesNotMatch(html, /WIP|example-token|example-recovery/u);
   assert.doesNotMatch(html, /<form\b/u);
   assert.doesNotMatch(html, /discard-button|Discard selected retry/u);
+  assert.match(html, /id="setup-title">Set up PME-F/u);
+  assert.match(html, /id="verification-panel"/u);
+  assert.match(html, /id="after-setup-panel"[^>]*hidden/u);
+  assert.match(application, /verificationPanel\.hidden = true/u);
+  assert.match(application, /setupTitle\.textContent = "Save your Repository access"/u);
+  assert.match(application, /setupTitle\.textContent = "Setup complete"/u);
+  assert.doesNotMatch(application, /(?:location|history)\.(?:assign|replace|pushState|replaceState)/u);
 
   assert.match(apexSetup, /href="https:\/\/setup\.pie-menu-editor\.com\/" rel="noreferrer"/u);
   assert.doesNotMatch(apexSetup, /<input\b|<form\b|<script\b/u);

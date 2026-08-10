@@ -21,14 +21,14 @@
   </header>
 
   <main class="wrap">
-    <p class="eyebrow">Extension repository</p>
-    <h1>Set up PME-F</h1>
-    <p class="intro">
+    <p class="eyebrow" id="setup-eyebrow">Extension repository</p>
+    <h1 id="setup-title">Set up PME-F</h1>
+    <p class="intro" id="setup-intro">
       Enter the purchase key shown on the page that brought you here. A PME account,
       password, or device registration is not required.
     </p>
 
-    <section class="setup-card" aria-labelledby="verify-heading">
+    <section class="setup-card" id="verification-panel" aria-labelledby="verify-heading">
       <h2 id="verify-heading">Verify your purchase</h2>
       <p>The key is checked against the purchase record and is not saved by this page.</p>
 
@@ -66,11 +66,12 @@
         </div>
       </div>
 
-      <div class="message" id="message" role="status" aria-live="polite" hidden>
-        <strong id="message-title"></strong>
-        <p id="message-body"></p>
-      </div>
     </section>
+
+    <div class="message" id="message" role="status" aria-live="polite" hidden>
+      <strong id="message-title"></strong>
+      <p id="message-body"></p>
+    </div>
 
     <section class="credentials" id="credentials-panel" aria-labelledby="access-heading" hidden>
       <h2 id="access-heading">Blender Repository settings</h2>
@@ -113,7 +114,7 @@
       </div>
     </section>
 
-    <section class="next" aria-labelledby="next-heading">
+    <section class="next" id="after-setup-panel" aria-labelledby="next-heading" hidden>
       <h2 id="next-heading">After setup</h2>
       <ol>
         <li>Open Blender Preferences and select <strong>Get Extensions</strong>.</li>
