@@ -223,6 +223,7 @@ test("generated output is isolated, exact-origin, and deny-by-default", async ()
   assert.match(application, /verificationPanel\.hidden = true/u);
   assert.match(application, /setupTitle\.textContent = "Save your Repository access"/u);
   assert.match(application, /setupTitle\.textContent = "Setup complete"/u);
+  assert.doesNotMatch(application, /Setup was already completed/u);
   assert.doesNotMatch(application, /(?:location|history)\.(?:assign|replace|pushState|replaceState)/u);
 
   assert.match(apexSetup, /href="https:\/\/setup\.pie-menu-editor\.com\/" rel="noreferrer"/u);

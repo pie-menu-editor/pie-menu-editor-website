@@ -456,7 +456,7 @@ export function startSetupApplication({
     showCompletedView();
     setMessage(
       "success",
-      "Setup was already completed",
+      "Setup complete",
       "No credential is shown again after acknowledgement. Use your recovery secret if access must be replaced.",
     );
   }
