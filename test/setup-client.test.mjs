@@ -1,0 +1,264 @@
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { readFile, readdir } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { test } from "node:test";
+import {
+  ACK_STORAGE_PREFIX,
+  CLAIM_STORAGE_PREFIX,
+  PENDING_RETENTION_MS,
+  StorageProofError,
+  acknowledgementStorageName,
+  createIdempotencyKey,
+  createLifecycleGuard,
+  isCanonicalIdempotencyKey,
+  listPendingClaims,
+  parseCredentialDelivery,
+  persistAcknowledgementOperation,
+  persistClaimOperation,
+  postJson,
+  readAcknowledgementOperation,
+  readClaimOperation,
+  removePendingOperations,
+} from "../dist/setup/app.mjs";
+
+const root = new URL("../", import.meta.url);
+const output = new URL("../dist/setup/", import.meta.url);
+const fixedNow = Date.parse("2026-08-10T00:00:00.000Z");
+
+test("idempotency keys canonically encode 32 random bytes", () => {
+  const bytes = Uint8Array.from({ length: 32 }, (_, index) => index);
+  const cryptoSource = { getRandomValues(target) { target.set(bytes); return target; } };
+  const key = createIdempotencyKey(cryptoSource);
+  assert.equal(key.length, 43);
+  assert.match(key, /^[A-Za-z0-9_-]{43}$/u);
+  assert.equal(Buffer.from(key, "base64url").length, 32);
+  assert.equal(isCanonicalIdempotencyKey(`${key}=`), false);
+});
+
+test("claim operations remain independent and expire after the last attempt", () => {
+  const storage = new FakeStorage();
+  const first = deterministicKey(1);
+  const second = deterministicKey(2);
+  persistClaimOperation(storage, first, fixedNow - PENDING_RETENTION_MS + 1);
+  persistClaimOperation(storage, second, fixedNow - 1_000);
+
+  assert.deepEqual(
+    listPendingClaims(storage, fixedNow).map((entry) => entry.idempotencyKey),
+    [second, first],
+  );
+  persistClaimOperation(storage, first, fixedNow);
+  assert.equal(readClaimOperation(storage, first).lastAttemptAt, fixedNow);
+
+  assert.deepEqual(
+    listPendingClaims(storage, fixedNow + PENDING_RETENTION_MS).map((entry) => entry.idempotencyKey),
+    [],
+  );
+  assert.equal(storage.getItem(`${CLAIM_STORAGE_PREFIX}${first}`), null);
+  assert.equal(storage.getItem(`${CLAIM_STORAGE_PREFIX}${second}`), null);
+});
+
+test("durability must be proven by exact storage read-back", () => {
+  const key = deterministicKey(3);
+  const storage = new FakeStorage({ corruptReads: true });
+  assert.throws(() => persistClaimOperation(storage, key, fixedNow), StorageProofError);
+});
+
+test("acknowledgement uses a separate stable key and no delivery secret storage", () => {
+  const storage = new FakeStorage();
+  const claimKey = deterministicKey(4);
+  const acknowledgementKey = deterministicKey(5);
+  persistClaimOperation(storage, claimKey, fixedNow);
+  persistAcknowledgementOperation(storage, claimKey, acknowledgementKey, fixedNow);
+
+  assert.notEqual(claimKey, acknowledgementKey);
+  assert.equal(readAcknowledgementOperation(storage, claimKey).idempotencyKey, acknowledgementKey);
+  const serialized = storage.getItem(acknowledgementStorageName(claimKey));
+  assert.equal(serialized.includes("delivery"), false);
+  assert.equal(serialized.includes("recovery"), false);
+
+  removePendingOperations(storage, claimKey);
+  assert.equal(storage.getItem(`${CLAIM_STORAGE_PREFIX}${claimKey}`), null);
+  assert.equal(storage.getItem(`${ACK_STORAGE_PREFIX}${claimKey}`), null);
+});
+
+test("lifecycle invalidation aborts work and rejects late handlers", () => {
+  const guard = createLifecycleGuard();
+  const first = guard.begin();
+  assert.equal(guard.isCurrent(first.epoch), true);
+  guard.invalidate();
+  assert.equal(first.signal.aborted, true);
+  assert.equal(guard.isCurrent(first.epoch), false);
+  const second = guard.begin();
+  assert.equal(guard.isCurrent(second.epoch), true);
+  assert.equal(guard.isCurrent(first.epoch), false);
+});
+
+test("claim transport refuses redirects and omits credentials", async () => {
+  const calls = [];
+  const fetchImplementation = async (url, options) => {
+    calls.push({ url, options });
+    return new Response(JSON.stringify({ error: "provider_unavailable" }), {
+      status: 503,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+  const controller = new AbortController();
+  const value = { idempotency_key: deterministicKey(6), license_key: "purchase-key" };
+  const result = await postJson(
+    fetchImplementation,
+    "https://extensions.pie-menu-editor.com/v1/claims/gumroad",
+    value,
+    controller.signal,
+  );
+  assert.equal(result.response.status, 503);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].options.redirect, "error");
+  assert.equal(calls[0].options.mode, "cors");
+  assert.equal(calls[0].options.credentials, "omit");
+  assert.equal(calls[0].options.cache, "no-store");
+  assert.equal(calls[0].options.referrerPolicy, "no-referrer");
+  assert.deepEqual(JSON.parse(calls[0].options.body), value);
+});
+
+test("only an exact delivered response exposes credential fields", () => {
+  const delivered = parseCredentialDelivery({
+    status: "succeeded",
+    delivery: {
+      status: "delivered",
+      delivery_id: "delivery-id",
+      repository_token: "repository-token",
+      recovery_secret: "recovery-secret",
+    },
+  });
+  assert.deepEqual(delivered, {
+    kind: "delivered",
+    deliveryId: "delivery-id",
+    repositoryToken: "repository-token",
+    recoverySecret: "recovery-secret",
+  });
+  for (const payload of [
+    null,
+    { status: "succeeded", delivery: null },
+    { status: "succeeded", delivery: { status: "delivered" } },
+    { status: "succeeded", delivery: { status: "future_status", repository_token: "secret" } },
+    { status: "failed", delivery: { status: "delivered", repository_token: "secret" } },
+  ]) {
+    assert.notEqual(parseCredentialDelivery(payload).kind, "delivered");
+  }
+});
+
+test("generated setup output pins final script and style bytes", async () => {
+  const [html, headers, application] = await Promise.all([
+    readFile(new URL("index.html", output), "utf8"),
+    readFile(new URL("_headers", output), "utf8"),
+    readFile(new URL("app.mjs", output), "utf8"),
+  ]);
+  const applicationHash = `sha384-${createHash("sha384").update(application, "utf8").digest("base64")}`;
+  const style = html.match(/<style>([\s\S]*?)<\/style>/u)?.[1];
+  assert.equal(typeof style, "string");
+  const styleHash = `sha256-${createHash("sha256").update(style, "utf8").digest("base64")}`;
+
+  assert.match(html, new RegExp(`integrity="${escapeRegExp(applicationHash)}"`, "u"));
+  assert.match(headers, new RegExp(`script-src '${escapeRegExp(applicationHash)}'`, "u"));
+  assert.match(headers, new RegExp(`style-src '${escapeRegExp(styleHash)}'`, "u"));
+  assert.match(html, /data-cfasync="false"/u);
+  assert.doesNotMatch(headers, /unsafe-inline|'self'/u);
+  assert.doesNotMatch(`${html}${headers}`, /__[A-Z0-9_]+__/u);
+});
+
+test("generated output is isolated, exact-origin, and deny-by-default", async () => {
+  const [html, headers, files, apexSetup, sourceFiles] = await Promise.all([
+    readFile(new URL("index.html", output), "utf8"),
+    readFile(new URL("_headers", output), "utf8"),
+    readdir(output),
+    readFile(new URL("setup/index.html", root), "utf8"),
+    readdir(new URL("credential-setup/", root)),
+  ]);
+
+  assert.deepEqual(files.sort(), ["_headers", "app.mjs", "index.html"]);
+  assert.equal(sourceFiles.some((name) => /\.(?:html|m?js)$/u.test(name)), false);
+  assert.match(html, /name="pme-setup-origin" content="https:\/\/setup\.pie-menu-editor\.com"/u);
+  assert.match(html, /name="pme-service-origin" content="https:\/\/extensions\.pie-menu-editor\.com"/u);
+  assert.match(headers, /connect-src https:\/\/extensions\.pie-menu-editor\.com(?:;|\n)/u);
+  assert.match(headers, /Cache-Control: private, no-store, no-transform/u);
+  assert.match(headers, /default-src 'none'/u);
+  assert.match(headers, /form-action 'none'/u);
+  assert.match(headers, /worker-src 'none'/u);
+  assert.match(headers, /frame-ancestors 'none'/u);
+  assert.match(headers, /Cross-Origin-Opener-Policy: same-origin/u);
+  assert.doesNotMatch(html, /WIP|example-token|example-recovery/u);
+  assert.doesNotMatch(html, /<form\b/u);
+
+  assert.match(apexSetup, /href="https:\/\/setup\.pie-menu-editor\.com\/" rel="noreferrer"/u);
+  assert.doesNotMatch(apexSetup, /<input\b|<form\b|<script\b/u);
+});
+
+test("staging build is fail-closed until its fixed service origin is supplied", () => {
+  const result = spawnSync(
+    process.execPath,
+    ["tools/build-setup.mjs", "--target", "staging", "--output", "dist/staging-test"],
+    { cwd: new URL("../", import.meta.url), encoding: "utf8", env: { ...process.env, PME_SETUP_STAGING_SERVICE_ORIGIN: "" } },
+  );
+  assert.notEqual(result.status, 0);
+  assert.match(`${result.stderr}${result.stdout}`, /service origin is required/u);
+});
+
+test("staging build pins one fixed staging setup and service origin", async () => {
+  const stagingServiceOrigin = "https://extensions-staging.pie-menu-editor.com";
+  const result = spawnSync(
+    process.execPath,
+    ["tools/build-setup.mjs", "--target", "staging", "--output", "dist/staging-test"],
+    {
+      cwd: new URL("../", import.meta.url),
+      encoding: "utf8",
+      env: { ...process.env, PME_SETUP_STAGING_SERVICE_ORIGIN: stagingServiceOrigin },
+    },
+  );
+  assert.equal(result.status, 0, `${result.stderr}${result.stdout}`);
+  const [html, headers] = await Promise.all([
+    readFile(new URL("../dist/staging-test/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../dist/staging-test/_headers", import.meta.url), "utf8"),
+  ]);
+  assert.match(html, /content="https:\/\/setup-staging\.pie-menu-editor\.com"/u);
+  assert.match(html, new RegExp(`content="${escapeRegExp(stagingServiceOrigin)}"`, "u"));
+  assert.match(headers, new RegExp(`connect-src ${escapeRegExp(stagingServiceOrigin)}(?:;|\\n)`, "u"));
+  assert.doesNotMatch(`${html}${headers}`, /https:\/\/setup\.pie-menu-editor\.com/u);
+  assert.doesNotMatch(`${html}${headers}`, /connect-src https:\/\/extensions\.pie-menu-editor\.com(?:;|\n)/u);
+});
+
+test("build rejects unknown arguments instead of inferring a target", () => {
+  const result = spawnSync(
+    process.execPath,
+    ["tools/build-setup.mjs", "--target", "production", "--preview-branch", "main"],
+    { cwd: new URL("../", import.meta.url), encoding: "utf8" },
+  );
+  assert.notEqual(result.status, 0);
+  assert.match(`${result.stderr}${result.stdout}`, /unknown argument/u);
+});
+
+function deterministicKey(fill) {
+  return Buffer.alloc(32, fill).toString("base64url");
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+class FakeStorage {
+  #values = new Map();
+  #corruptReads;
+
+  constructor({ corruptReads = false } = {}) {
+    this.#corruptReads = corruptReads;
+  }
+
+  get length() { return this.#values.size; }
+  key(index) { return [...this.#values.keys()][index] ?? null; }
+  getItem(name) {
+    const value = this.#values.get(name) ?? null;
+    return this.#corruptReads && value !== null ? `${value}x` : value;
+  }
+  setItem(name, value) { this.#values.set(String(name), String(value)); }
+  removeItem(name) { this.#values.delete(String(name)); }
+}

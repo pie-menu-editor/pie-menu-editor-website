@@ -1,0 +1,677 @@
+export const CLAIM_STORAGE_PREFIX = "pme.setup.claim.";
+export const ACK_STORAGE_PREFIX = "pme.setup.ack.";
+export const PENDING_RETENTION_MS = 8 * 24 * 60 * 60 * 1_000;
+
+const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f]/;
+const MAX_RESPONSE_BYTES = 32_768;
+const MAX_DELIVERY_FIELD_LENGTH = 4_096;
+
+export class StorageProofError extends Error {
+  constructor() {
+    super("pending_operation_not_durable");
+    this.name = "StorageProofError";
+  }
+}
+
+export function isCanonicalIdempotencyKey(value) {
+  return typeof value === "string" && IDEMPOTENCY_KEY_PATTERN.test(value);
+}
+
+export function createIdempotencyKey(cryptoSource = globalThis.crypto) {
+  if (typeof cryptoSource?.getRandomValues !== "function") {
+    throw new Error("secure_random_unavailable");
+  }
+  const bytes = new Uint8Array(32);
+  cryptoSource.getRandomValues(bytes);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  const value = btoa(binary)
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replace(/=+$/u, "");
+  if (!isCanonicalIdempotencyKey(value)) throw new Error("secure_random_encoding_failed");
+  return value;
+}
+
+export function claimStorageName(idempotencyKey) {
+  if (!isCanonicalIdempotencyKey(idempotencyKey)) throw new TypeError("invalid_idempotency_key");
+  return `${CLAIM_STORAGE_PREFIX}${idempotencyKey}`;
+}
+
+export function acknowledgementStorageName(claimIdempotencyKey) {
+  if (!isCanonicalIdempotencyKey(claimIdempotencyKey)) throw new TypeError("invalid_idempotency_key");
+  return `${ACK_STORAGE_PREFIX}${claimIdempotencyKey}`;
+}
+
+function pendingRecord(idempotencyKey, now) {
+  return {
+    idempotency_key: idempotencyKey,
+    last_attempt_at: new Date(now).toISOString(),
+  };
+}
+
+function parsePendingRecord(serialized, expectedKey) {
+  if (typeof serialized !== "string") return null;
+  try {
+    const value = JSON.parse(serialized);
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+    if (Object.keys(value).sort().join(",") !== "idempotency_key,last_attempt_at") return null;
+    if (value.idempotency_key !== expectedKey || !isCanonicalIdempotencyKey(value.idempotency_key)) return null;
+    const timestamp = Date.parse(value.last_attempt_at);
+    if (!Number.isFinite(timestamp) || new Date(timestamp).toISOString() !== value.last_attempt_at) return null;
+    return { idempotencyKey: value.idempotency_key, lastAttemptAt: timestamp };
+  } catch {
+    return null;
+  }
+}
+
+function writeAndReadBack(storage, name, record) {
+  const serialized = JSON.stringify(record);
+  try {
+    storage.setItem(name, serialized);
+    if (storage.getItem(name) !== serialized) throw new StorageProofError();
+  } catch (error) {
+    if (error instanceof StorageProofError) throw error;
+    throw new StorageProofError();
+  }
+}
+
+export function persistClaimOperation(storage, idempotencyKey, now = Date.now()) {
+  const name = claimStorageName(idempotencyKey);
+  writeAndReadBack(storage, name, pendingRecord(idempotencyKey, now));
+  return idempotencyKey;
+}
+
+export function persistAcknowledgementOperation(
+  storage,
+  claimIdempotencyKey,
+  acknowledgementIdempotencyKey,
+  now = Date.now(),
+) {
+  const name = acknowledgementStorageName(claimIdempotencyKey);
+  writeAndReadBack(storage, name, pendingRecord(acknowledgementIdempotencyKey, now));
+  return acknowledgementIdempotencyKey;
+}
+
+export function readClaimOperation(storage, idempotencyKey) {
+  try {
+    return parsePendingRecord(storage.getItem(claimStorageName(idempotencyKey)), idempotencyKey);
+  } catch {
+    return null;
+  }
+}
+
+export function readAcknowledgementOperation(storage, claimIdempotencyKey) {
+  try {
+    const serialized = storage.getItem(acknowledgementStorageName(claimIdempotencyKey));
+    if (typeof serialized !== "string") return null;
+    const parsed = JSON.parse(serialized);
+    return parsePendingRecord(serialized, parsed?.idempotency_key);
+  } catch {
+    return null;
+  }
+}
+
+export function removePendingOperations(storage, claimIdempotencyKey) {
+  try {
+    storage.removeItem(claimStorageName(claimIdempotencyKey));
+    storage.removeItem(acknowledgementStorageName(claimIdempotencyKey));
+  } catch {
+    // An explicit removal is best effort. The entries expire independently.
+  }
+}
+
+export function listPendingClaims(storage, now = Date.now()) {
+  const claims = [];
+  const invalidOrExpired = [];
+  let names;
+  try {
+    names = Array.from({ length: storage.length }, (_, index) => storage.key(index));
+  } catch {
+    throw new StorageProofError();
+  }
+
+  for (const name of names) {
+    if (typeof name !== "string" || !name.startsWith(CLAIM_STORAGE_PREFIX)) continue;
+    const key = name.slice(CLAIM_STORAGE_PREFIX.length);
+    let record = null;
+    try {
+      record = parsePendingRecord(storage.getItem(name), key);
+    } catch {
+      throw new StorageProofError();
+    }
+    if (record === null || now - record.lastAttemptAt >= PENDING_RETENTION_MS) {
+      invalidOrExpired.push(key);
+      continue;
+    }
+    claims.push(record);
+  }
+
+  for (const key of invalidOrExpired) {
+    if (isCanonicalIdempotencyKey(key)) removePendingOperations(storage, key);
+  }
+  return claims.sort((left, right) => right.lastAttemptAt - left.lastAttemptAt);
+}
+
+export function createLifecycleGuard() {
+  let epoch = 0;
+  let controller = null;
+  return {
+    begin() {
+      controller?.abort();
+      controller = new AbortController();
+      epoch += 1;
+      return { epoch, signal: controller.signal };
+    },
+    isCurrent(candidate) {
+      return candidate === epoch && controller !== null && !controller.signal.aborted;
+    },
+    finish(candidate) {
+      if (candidate === epoch) controller = null;
+    },
+    invalidate() {
+      epoch += 1;
+      controller?.abort();
+      controller = null;
+    },
+  };
+}
+
+function boundedVisibleString(value) {
+  return typeof value === "string"
+    && value.length > 0
+    && value.length <= MAX_DELIVERY_FIELD_LENGTH
+    && !CONTROL_CHARACTER_PATTERN.test(value);
+}
+
+export function parseCredentialDelivery(payload) {
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return { kind: "invalid" };
+  if (payload.status !== "succeeded") return { kind: "invalid" };
+  const delivery = payload.delivery;
+  if (delivery === null || typeof delivery !== "object" || Array.isArray(delivery)) {
+    return { kind: "unavailable", status: "missing" };
+  }
+  if (delivery.status === "delivered") {
+    if (
+      !boundedVisibleString(delivery.delivery_id)
+      || !boundedVisibleString(delivery.repository_token)
+      || !boundedVisibleString(delivery.recovery_secret)
+    ) {
+      return { kind: "invalid" };
+    }
+    return {
+      kind: "delivered",
+      deliveryId: delivery.delivery_id,
+      repositoryToken: delivery.repository_token,
+      recoverySecret: delivery.recovery_secret,
+    };
+  }
+  if (
+    delivery.status === "delivered_and_acknowledged"
+    || delivery.status === "delivery_expired"
+    || delivery.status === "delivery_unavailable"
+    || delivery.status === "credential_rotated"
+  ) {
+    return { kind: "terminal", status: delivery.status };
+  }
+  return { kind: "invalid" };
+}
+
+async function boundedJson(response) {
+  const declaredLength = Number(response.headers.get("Content-Length"));
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_RESPONSE_BYTES) {
+    throw new Error("response_too_large");
+  }
+  const text = await response.text();
+  if (new TextEncoder().encode(text).byteLength > MAX_RESPONSE_BYTES) {
+    throw new Error("response_too_large");
+  }
+  try {
+    const value = JSON.parse(text);
+    return value !== null && typeof value === "object" && !Array.isArray(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function postJson(fetchImplementation, url, value, signal) {
+  let body = JSON.stringify(value);
+  value = null;
+  const pending = fetchImplementation(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body,
+    mode: "cors",
+    credentials: "omit",
+    cache: "no-store",
+    redirect: "error",
+    referrerPolicy: "no-referrer",
+    signal,
+  });
+  body = "";
+  const response = await pending;
+  return { response, payload: await boundedJson(response) };
+}
+
+export function canonicalHttpsOrigin(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:"
+      && url.origin === value
+      && url.pathname === "/"
+      && url.search === ""
+      && url.hash === ""
+      && url.username === ""
+      && url.password === ""
+      ? url.origin
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function readConfig(documentSource, locationSource) {
+  const setupOrigin = canonicalHttpsOrigin(
+    documentSource.querySelector('meta[name="pme-setup-origin"]')?.content,
+  );
+  const serviceOrigin = canonicalHttpsOrigin(
+    documentSource.querySelector('meta[name="pme-service-origin"]')?.content,
+  );
+  if (setupOrigin === null || serviceOrigin === null || locationSource.origin !== setupOrigin) return null;
+  return {
+    setupOrigin,
+    serviceOrigin,
+    repositoryUrl: `${serviceOrigin}/v1/`,
+    claimUrl: `${serviceOrigin}/v1/claims/gumroad`,
+    acknowledgeUrl: `${serviceOrigin}/v1/recovery/delivery/acknowledge`,
+  };
+}
+
+export function startSetupApplication({
+  documentSource = document,
+  windowSource = window,
+  storage = window.localStorage,
+  fetchImplementation = window.fetch.bind(window),
+  cryptoSource = window.crypto,
+  now = () => Date.now(),
+} = {}) {
+  const config = readConfig(documentSource, windowSource.location);
+  const guard = createLifecycleGuard();
+  const purchaseKeyInput = documentSource.getElementById("purchase-key");
+  const claimButton = documentSource.getElementById("claim-button");
+  const pendingPanel = documentSource.getElementById("pending-panel");
+  const pendingSelect = documentSource.getElementById("pending-select");
+  const startNewButton = documentSource.getElementById("start-new-button");
+  const discardButton = documentSource.getElementById("discard-button");
+  const message = documentSource.getElementById("message");
+  const messageTitle = documentSource.getElementById("message-title");
+  const messageBody = documentSource.getElementById("message-body");
+  const credentialsPanel = documentSource.getElementById("credentials-panel");
+  const repositoryUrl = documentSource.getElementById("repository-url");
+  const repositoryToken = documentSource.getElementById("repository-token");
+  const recoverySecret = documentSource.getElementById("recovery-secret");
+  const savedConfirmation = documentSource.getElementById("saved-confirmation");
+  const acknowledgeButton = documentSource.getElementById("ack-button");
+
+  let currentDelivery = null;
+  let startNew = false;
+  let busy = false;
+
+  function setMessage(kind, title, body) {
+    message.dataset.kind = kind;
+    messageTitle.textContent = title;
+    messageBody.textContent = body;
+    message.hidden = false;
+  }
+
+  function clearMessage() {
+    messageTitle.textContent = "";
+    messageBody.textContent = "";
+    message.hidden = true;
+    delete message.dataset.kind;
+  }
+
+  function setBusy(value) {
+    busy = value;
+    claimButton.disabled = value || config === null || currentDelivery !== null;
+    purchaseKeyInput.disabled = value || config === null || currentDelivery !== null;
+    pendingSelect.disabled = value;
+    startNewButton.disabled = value;
+    discardButton.disabled = value || pendingSelect.options.length === 0 || startNew;
+    acknowledgeButton.disabled = value || !savedConfirmation.checked || currentDelivery === null;
+  }
+
+  function scrubCredentials() {
+    currentDelivery = null;
+    repositoryUrl.textContent = "";
+    repositoryToken.textContent = "";
+    recoverySecret.textContent = "";
+    savedConfirmation.checked = false;
+    credentialsPanel.hidden = true;
+    acknowledgeButton.disabled = true;
+  }
+
+  function refreshPendingClaims(preferredKey = null) {
+    const claims = listPendingClaims(storage, now());
+    pendingSelect.replaceChildren();
+    for (const claim of claims) {
+      const option = documentSource.createElement("option");
+      option.value = claim.idempotencyKey;
+      option.textContent = `Pending request — ${new Date(claim.lastAttemptAt).toLocaleString()}`;
+      pendingSelect.append(option);
+    }
+    const preferred = claims.find((claim) => claim.idempotencyKey === preferredKey);
+    if (preferred !== undefined) pendingSelect.value = preferred.idempotencyKey;
+    pendingPanel.hidden = claims.length === 0;
+    if (claims.length === 0) startNew = true;
+    startNewButton.textContent = startNew ? "Use selected retry" : "Start another setup";
+    pendingSelect.disabled = busy;
+    startNewButton.disabled = busy;
+    discardButton.disabled = busy || claims.length === 0 || startNew;
+    return claims;
+  }
+
+  function selectedClaimKey() {
+    return !startNew && isCanonicalIdempotencyKey(pendingSelect.value)
+      ? pendingSelect.value
+      : null;
+  }
+
+  function currentDocumentCanRender(epoch, claimKey) {
+    return guard.isCurrent(epoch)
+      && documentSource.visibilityState === "visible"
+      && readClaimOperation(storage, claimKey) !== null;
+  }
+
+  function renderDelivery(claimKey, delivery) {
+    currentDelivery = { claimKey, ...delivery };
+    purchaseKeyInput.value = "";
+    repositoryUrl.textContent = config.repositoryUrl;
+    repositoryToken.textContent = delivery.repositoryToken;
+    recoverySecret.textContent = delivery.recoverySecret;
+    savedConfirmation.checked = false;
+    credentialsPanel.hidden = false;
+    credentialsPanel.scrollIntoView({ behavior: "smooth", block: "start" });
+    setMessage("success", "Purchase verified", "Save both credentials, then explicitly finish setup.");
+  }
+
+  function completeWithoutCredentials(claimKey) {
+    removePendingOperations(storage, claimKey);
+    scrubCredentials();
+    refreshPendingClaims();
+    setMessage(
+      "success",
+      "Setup was already completed",
+      "No credential is shown again after acknowledgement. Use your recovery secret if access must be replaced.",
+    );
+  }
+
+  async function submitClaim() {
+    if (busy || config === null) return;
+    clearMessage();
+    scrubCredentials();
+
+    let purchaseKey = purchaseKeyInput.value.trim();
+    if (purchaseKey.length === 0 || purchaseKey.length > 512 || CONTROL_CHARACTER_PATTERN.test(purchaseKey)) {
+      purchaseKeyInput.value = "";
+      purchaseKey = "";
+      setMessage("error", "Enter a valid purchase key", "Copy the complete key from your purchase page and try again.");
+      return;
+    }
+
+    let claimKey = selectedClaimKey();
+    try {
+      if (claimKey === null) claimKey = createIdempotencyKey(cryptoSource);
+      persistClaimOperation(storage, claimKey, now());
+    } catch {
+      purchaseKeyInput.value = "";
+      purchaseKey = "";
+      setMessage(
+        "error",
+        "This browser cannot save the retry reference",
+        "No claim was sent. Enable site storage or use another private browser profile and try again.",
+      );
+      return;
+    }
+
+    startNew = false;
+    refreshPendingClaims(claimKey);
+    const operation = guard.begin();
+    setBusy(true);
+    let request = { idempotency_key: claimKey, license_key: purchaseKey };
+    purchaseKeyInput.value = "";
+    purchaseKey = "";
+    const pending = postJson(fetchImplementation, config.claimUrl, request, operation.signal);
+    request.license_key = "";
+    request = null;
+
+    try {
+      const { response, payload } = await pending;
+      if (!currentDocumentCanRender(operation.epoch, claimKey)) return;
+
+      if (response.ok) {
+        const delivery = parseCredentialDelivery(payload);
+        if (delivery.kind === "delivered") {
+          renderDelivery(claimKey, delivery);
+          return;
+        }
+        if (delivery.kind === "terminal" && delivery.status === "delivered_and_acknowledged") {
+          completeWithoutCredentials(claimKey);
+          return;
+        }
+        if (delivery.kind === "terminal" && (delivery.status === "delivery_expired" || delivery.status === "credential_rotated")) {
+          removePendingOperations(storage, claimKey);
+          refreshPendingClaims();
+          setMessage("error", "Repository access must be recovered", "This delivery can no longer be shown. Contact support or use the recovery flow.");
+          return;
+        }
+        setMessage("error", "Credential delivery is unavailable", "No secret was shown. Keep this pending request and contact support if retrying later does not help.");
+        return;
+      }
+
+      const category = typeof payload?.error === "string" ? payload.error : "unknown_error";
+      if (response.status === 409 && category === "idempotency_conflict") {
+        setMessage(
+          "error",
+          "This key does not match the selected retry",
+          "Try another pending request, re-enter its original purchase key, or explicitly start a separate setup.",
+        );
+      } else if (response.status === 409 || response.status === 429 || response.status >= 500) {
+        setMessage("error", "The result is not final", "The retry reference was kept. Wait a moment, then retry with the same purchase key.");
+      } else if (response.status === 403 && category !== "setup_origin_not_allowed") {
+        removePendingOperations(storage, claimKey);
+        refreshPendingClaims();
+        setMessage("error", "The purchase could not be used", "Check the purchase key. If it was already claimed or should be valid, contact support.");
+      } else {
+        setMessage("error", "Setup is temporarily unavailable", "No credential was shown. The retry reference was kept for another attempt.");
+      }
+    } catch (error) {
+      if (error?.name !== "AbortError" && currentDocumentCanRender(operation.epoch, claimKey)) {
+        setMessage("error", "We could not confirm the result", "The retry reference was kept. Retry with the same purchase key.");
+      }
+    } finally {
+      const current = guard.isCurrent(operation.epoch);
+      guard.finish(operation.epoch);
+      if (current) setBusy(false);
+    }
+  }
+
+  async function acknowledgeDelivery() {
+    if (busy || config === null || currentDelivery === null || !savedConfirmation.checked) return;
+    const delivery = currentDelivery;
+    let acknowledgement = readAcknowledgementOperation(storage, delivery.claimKey);
+    let acknowledgementKey = acknowledgement?.idempotencyKey ?? null;
+    try {
+      if (acknowledgementKey === null) acknowledgementKey = createIdempotencyKey(cryptoSource);
+      persistAcknowledgementOperation(storage, delivery.claimKey, acknowledgementKey, now());
+    } catch {
+      setMessage("error", "This browser cannot save the finish retry", "Setup was not acknowledged. Keep both credentials and try again in this browser.");
+      return;
+    }
+
+    const operation = guard.begin();
+    setBusy(true);
+    let request = {
+      delivery_id: delivery.deliveryId,
+      idempotency_key: acknowledgementKey,
+      recovery_credential: delivery.recoverySecret,
+    };
+    const pending = postJson(fetchImplementation, config.acknowledgeUrl, request, operation.signal);
+    request.recovery_credential = "";
+    request = null;
+
+    try {
+      const { response, payload } = await pending;
+      if (!currentDocumentCanRender(operation.epoch, delivery.claimKey)) return;
+      const result = response.ok ? parseCredentialDelivery(payload) : null;
+      const category = typeof payload?.error === "string" ? payload.error : "unknown_error";
+      if (
+        (response.ok && result?.kind === "terminal" && result.status === "delivered_and_acknowledged")
+        || (response.status === 403 && category === "delivery_already_acknowledged")
+      ) {
+        completeWithoutCredentials(delivery.claimKey);
+        return;
+      }
+      if (response.status === 409 || response.status === 429 || response.status >= 500) {
+        setMessage("error", "Finish could not be confirmed", "Keep both credentials. The same finish request can be retried.");
+        return;
+      }
+      try {
+        storage.removeItem(acknowledgementStorageName(delivery.claimKey));
+      } catch {
+        // Expiry remains the fallback cleanup.
+      }
+      setMessage("error", "Finish was not accepted", "Keep both credentials and contact support before discarding this pending setup.");
+    } catch (error) {
+      if (error?.name !== "AbortError" && currentDocumentCanRender(operation.epoch, delivery.claimKey)) {
+        setMessage("error", "Finish could not be confirmed", "Keep both credentials. The same finish request can be retried.");
+      }
+    } finally {
+      const current = guard.isCurrent(operation.epoch);
+      guard.finish(operation.epoch);
+      if (current) setBusy(false);
+    }
+  }
+
+  async function copyValue(identifier, button) {
+    if (currentDelivery === null) return;
+    const values = {
+      "repository-url": config.repositoryUrl,
+      "repository-token": currentDelivery.repositoryToken,
+      "recovery-secret": currentDelivery.recoverySecret,
+    };
+    const value = values[identifier];
+    if (typeof value !== "string") return;
+    try {
+      await windowSource.navigator.clipboard.writeText(value);
+      const original = button.textContent;
+      button.textContent = "Copied";
+      windowSource.setTimeout(() => {
+        if (button.isConnected) button.textContent = original;
+      }, 1_500);
+    } catch {
+      setMessage("error", "Copy was blocked", "Select the value and copy it manually.");
+    }
+  }
+
+  claimButton.addEventListener("click", submitClaim);
+  purchaseKeyInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      submitClaim();
+    }
+  });
+  pendingSelect.addEventListener("change", () => {
+    startNew = false;
+    startNewButton.textContent = "Start another setup";
+    pendingSelect.disabled = false;
+    discardButton.disabled = false;
+    clearMessage();
+  });
+  startNewButton.addEventListener("click", () => {
+    startNew = !startNew;
+    startNewButton.textContent = startNew ? "Use selected retry" : "Start another setup";
+    discardButton.disabled = startNew || pendingSelect.options.length === 0;
+    if (startNew) {
+      setMessage("info", "A separate setup will be started", "Existing pending retries will remain available in this browser.");
+    } else {
+      setMessage("info", "The selected retry will be used", "Enter the same purchase key used for that setup attempt.");
+    }
+  });
+  discardButton.addEventListener("click", () => {
+    const claimKey = selectedClaimKey();
+    if (claimKey === null) return;
+    if (!windowSource.confirm("Discard this pending retry reference? This cannot be undone in this browser.")) return;
+    if (currentDelivery?.claimKey === claimKey) scrubCredentials();
+    removePendingOperations(storage, claimKey);
+    startNew = false;
+    refreshPendingClaims();
+    setMessage("info", "Pending retry discarded", "You can start setup again with the purchase key.");
+  });
+  savedConfirmation.addEventListener("change", () => setBusy(busy));
+  acknowledgeButton.addEventListener("click", acknowledgeDelivery);
+  for (const button of documentSource.querySelectorAll(".copy-button")) {
+    button.addEventListener("click", () => copyValue(button.dataset.copy, button));
+  }
+
+  windowSource.addEventListener("storage", (event) => {
+    if (currentDelivery === null) return;
+    const claimName = claimStorageName(currentDelivery.claimKey);
+    if (event.key === null || (event.key === claimName && event.newValue === null)) {
+      const completedClaimKey = currentDelivery.claimKey;
+      guard.invalidate();
+      scrubCredentials();
+      refreshPendingClaims();
+      if (event.key === claimName || readClaimOperation(storage, completedClaimKey) === null) {
+        setMessage("success", "Setup was finished in another tab", "Credential values were removed from this tab.");
+      }
+    }
+  });
+
+  windowSource.addEventListener("pagehide", () => {
+    guard.invalidate();
+    purchaseKeyInput.value = "";
+    scrubCredentials();
+    setBusy(false);
+  });
+
+  windowSource.addEventListener("pageshow", () => {
+    purchaseKeyInput.value = "";
+    scrubCredentials();
+    try {
+      refreshPendingClaims();
+    } catch {
+      setMessage("error", "Browser storage is unavailable", "No claim will be sent from this browser.");
+    }
+  });
+
+  documentSource.addEventListener("visibilitychange", () => {
+    if (documentSource.visibilityState !== "visible" || currentDelivery === null) return;
+    if (readClaimOperation(storage, currentDelivery.claimKey) === null) {
+      guard.invalidate();
+      scrubCredentials();
+      refreshPendingClaims();
+      setMessage("success", "Setup was finished in another tab", "Credential values were removed from this tab.");
+    }
+  });
+
+  if (config === null) {
+    claimButton.disabled = true;
+    purchaseKeyInput.disabled = true;
+    setMessage("error", "Setup is not available at this address", "Return to the purchase page and use its setup link.");
+    return { stop: () => guard.invalidate() };
+  }
+
+  try {
+    refreshPendingClaims();
+  } catch {
+    claimButton.disabled = true;
+    setMessage("error", "Browser storage is unavailable", "No claim will be sent. Enable site storage or use another browser profile.");
+  }
+  return { stop: () => { guard.invalidate(); purchaseKeyInput.value = ""; scrubCredentials(); } };
+}
+
+if (typeof document !== "undefined" && typeof window !== "undefined") {
+  startSetupApplication();
+}

@@ -1,0 +1,9 @@
+{
+  "name": "pie-menu-editor-website",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:setup": "node tools/build-setup.mjs --target production",
+    "test": "npm run build:setup && node --test test/*.test.mjs"
+  }
+}

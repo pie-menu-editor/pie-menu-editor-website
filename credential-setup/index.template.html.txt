@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Set up access to the Pie Menu Editor Fork Blender Extension repository.">
+  <meta name="robots" content="noindex, nofollow, noarchive">
+  <meta name="referrer" content="no-referrer">
+  <meta name="pme-setup-origin" content="__SETUP_ORIGIN__">
+  <meta name="pme-service-origin" content="__SERVICE_ORIGIN__">
+  <link rel="canonical" href="__SETUP_ORIGIN__/">
+  <title>Set up PME-F</title>
+  <style>__INLINE_STYLE__</style>
+</head>
+<body>
+  <header>
+    <div class="wrap">
+      <a class="brand" href="https://pie-menu-editor.com/" rel="noreferrer">PME-F</a>
+      <!--email_off--><a class="support-link" href="mailto:Support@pie-menu-editor.com">Support</a><!--/email_off-->
+    </div>
+  </header>
+
+  <main class="wrap">
+    <p class="eyebrow">Extension repository</p>
+    <h1>Set up PME-F</h1>
+    <p class="intro">
+      Enter the purchase key shown on the page that brought you here. A PME account,
+      password, or device registration is not required.
+    </p>
+
+    <section class="setup-card" aria-labelledby="verify-heading">
+      <h2 id="verify-heading">Verify your purchase</h2>
+      <p>The key is checked against the purchase record and is not saved by this page.</p>
+
+      <div class="field-group" role="group" aria-labelledby="purchase-label">
+        <label id="purchase-label" for="purchase-key">Purchase key</label>
+        <div class="field-row">
+          <input
+            id="purchase-key"
+            name="pme-purchase-proof"
+            type="text"
+            inputmode="text"
+            autocomplete="off"
+            autocapitalize="none"
+            spellcheck="false"
+            data-1p-ignore="true"
+            data-lpignore="true"
+            data-bwignore="true"
+            placeholder="Enter your purchase key"
+            aria-describedby="purchase-help"
+          >
+          <button id="claim-button" type="button">Continue</button>
+        </div>
+        <p class="field-help" id="purchase-help">
+          Do not let a shared browser or password manager save this value.
+        </p>
+      </div>
+
+      <div class="pending" id="pending-panel" hidden>
+        <h3>Unfinished setup in this browser</h3>
+        <p>Retry it with the same purchase key to recover a result after a timeout.</p>
+        <label for="pending-select">Pending request</label>
+        <select id="pending-select"></select>
+        <div class="small-actions">
+          <button class="secondary" id="start-new-button" type="button">Start another setup</button>
+          <button class="quiet" id="discard-button" type="button">Discard selected retry</button>
+        </div>
+      </div>
+
+      <div class="message" id="message" role="status" aria-live="polite" hidden>
+        <strong id="message-title"></strong>
+        <p id="message-body"></p>
+      </div>
+    </section>
+
+    <section class="credentials" id="credentials-panel" aria-labelledby="access-heading" hidden>
+      <h2 id="access-heading">Blender Repository settings</h2>
+      <p class="credential-warning">
+        These values are shown only until you confirm that they are saved.
+      </p>
+
+      <div class="credential">
+        <span class="field-label">Repository URL</span>
+        <div class="value-row">
+          <code id="repository-url"></code>
+          <button class="copy-button" type="button" data-copy="repository-url">Copy</button>
+        </div>
+      </div>
+
+      <div class="credential">
+        <span class="field-label">Repository access token</span>
+        <div class="value-row">
+          <code id="repository-token"></code>
+          <button class="copy-button" type="button" data-copy="repository-token">Copy</button>
+        </div>
+        <p class="field-help">Store this token only in Blender's Repository settings.</p>
+      </div>
+
+      <div class="recovery">
+        <h2>Recovery secret</h2>
+        <p>Save this outside Blender. You will need it to replace a lost or leaked Repository token.</p>
+        <div class="value-row">
+          <code id="recovery-secret"></code>
+          <button class="copy-button" type="button" data-copy="recovery-secret">Copy</button>
+        </div>
+      </div>
+
+      <div class="acknowledge">
+        <label class="confirmation" for="saved-confirmation">
+          <input id="saved-confirmation" type="checkbox" autocomplete="off">
+          I saved the Repository token and recovery secret.
+        </label>
+        <button id="ack-button" type="button" disabled>Finish setup</button>
+      </div>
+    </section>
+
+    <section class="next" aria-labelledby="next-heading">
+      <h2 id="next-heading">After setup</h2>
+      <ol>
+        <li>Open Blender Preferences and select <strong>Get Extensions</strong>.</li>
+        <li>Add a remote Repository using the URL and access token.</li>
+        <li>Sync the Repository, then install <strong>Pie Menu Editor Fork</strong>.</li>
+      </ol>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      Need help? <!--email_off--><a href="mailto:Support@pie-menu-editor.com">Contact PME-F support</a><!--/email_off-->.
+    </div>
+  </footer>
+
+  <script type="module" data-cfasync="false" src="/app.mjs" integrity="__APP_INTEGRITY__" crossorigin="anonymous"></script>
+</body>
+</html>
