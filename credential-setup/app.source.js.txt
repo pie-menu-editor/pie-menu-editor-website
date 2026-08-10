@@ -328,7 +328,6 @@ export function startSetupApplication({
   const pendingPanel = documentSource.getElementById("pending-panel");
   const pendingSelect = documentSource.getElementById("pending-select");
   const startNewButton = documentSource.getElementById("start-new-button");
-  const discardButton = documentSource.getElementById("discard-button");
   const message = documentSource.getElementById("message");
   const messageTitle = documentSource.getElementById("message-title");
   const messageBody = documentSource.getElementById("message-body");
@@ -363,7 +362,6 @@ export function startSetupApplication({
     purchaseKeyInput.disabled = value || config === null || currentDelivery !== null;
     pendingSelect.disabled = value || currentDelivery !== null;
     startNewButton.disabled = value || currentDelivery !== null;
-    discardButton.disabled = value || currentDelivery !== null || pendingSelect.options.length === 0 || startNew;
     acknowledgeButton.disabled = value || !savedConfirmation.checked || currentDelivery === null;
   }
 
@@ -393,7 +391,6 @@ export function startSetupApplication({
     startNewButton.textContent = startNew ? "Use selected retry" : "Start another setup";
     pendingSelect.disabled = busy || currentDelivery !== null;
     startNewButton.disabled = busy || currentDelivery !== null;
-    discardButton.disabled = busy || currentDelivery !== null || claims.length === 0 || startNew;
     return claims;
   }
 
@@ -611,30 +608,17 @@ export function startSetupApplication({
     startNew = false;
     startNewButton.textContent = "Start another setup";
     pendingSelect.disabled = false;
-    discardButton.disabled = false;
     clearMessage();
   });
   startNewButton.addEventListener("click", () => {
     if (currentDelivery !== null) return;
     startNew = !startNew;
     startNewButton.textContent = startNew ? "Use selected retry" : "Start another setup";
-    discardButton.disabled = startNew || pendingSelect.options.length === 0;
     if (startNew) {
       setMessage("info", "A separate setup will be started", "Existing pending retries will remain available in this browser.");
     } else {
       setMessage("info", "The selected retry will be used", "Enter the same purchase key used for that setup attempt.");
     }
-  });
-  discardButton.addEventListener("click", () => {
-    if (currentDelivery !== null) return;
-    const claimKey = selectedClaimKey();
-    if (claimKey === null) return;
-    if (!windowSource.confirm("Discard this pending retry reference? This cannot be undone in this browser.")) return;
-    if (currentDelivery?.claimKey === claimKey) scrubCredentials();
-    removePendingOperations(storage, claimKey);
-    startNew = false;
-    refreshPendingClaims();
-    setMessage("info", "Pending retry discarded", "You can start setup again with the purchase key.");
   });
   savedConfirmation.addEventListener("change", () => setBusy(busy));
   acknowledgeButton.addEventListener("click", acknowledgeDelivery);

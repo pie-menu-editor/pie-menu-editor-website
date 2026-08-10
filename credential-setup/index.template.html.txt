@@ -63,7 +63,6 @@
         <select id="pending-select"></select>
         <div class="small-actions">
           <button class="secondary" id="start-new-button" type="button">Start another setup</button>
-          <button class="quiet" id="discard-button" type="button">Discard selected retry</button>
         </div>
       </div>
 

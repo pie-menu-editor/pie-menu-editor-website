@@ -215,6 +215,7 @@ test("generated output is isolated, exact-origin, and deny-by-default", async ()
   assert.match(headers, /Strict-Transport-Security: max-age=31536000/u);
   assert.doesNotMatch(html, /WIP|example-token|example-recovery/u);
   assert.doesNotMatch(html, /<form\b/u);
+  assert.doesNotMatch(html, /discard-button|Discard selected retry/u);
 
   assert.match(apexSetup, /href="https:\/\/setup\.pie-menu-editor\.com\/" rel="noreferrer"/u);
   assert.doesNotMatch(apexSetup, /<input\b|<form\b|<script\b/u);
