@@ -82,6 +82,7 @@ const headers = `/*
   Cross-Origin-Resource-Policy: same-origin
   Permissions-Policy: accelerometer=(), camera=(), geolocation=(), microphone=(), payment=(), usb=()
   Referrer-Policy: no-referrer
+  Strict-Transport-Security: max-age=31536000
   X-Content-Type-Options: nosniff
   X-Frame-Options: DENY
   X-Robots-Tag: noindex, nofollow, noarchive

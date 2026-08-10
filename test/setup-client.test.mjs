@@ -121,6 +121,31 @@ test("claim transport refuses redirects and omits credentials", async () => {
   assert.deepEqual(JSON.parse(calls[0].options.body), value);
 });
 
+test("claim transport cancels a chunked response before it exceeds the byte limit", async () => {
+  let cancelled = false;
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new Uint8Array(20_000));
+      controller.enqueue(new Uint8Array(20_000));
+    },
+    cancel() { cancelled = true; },
+  });
+  const fetchImplementation = async () => new Response(body, {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+  await assert.rejects(
+    postJson(
+      fetchImplementation,
+      "https://extensions.pie-menu-editor.com/v1/claims/gumroad",
+      { idempotency_key: deterministicKey(7), license_key: "purchase-key" },
+      new AbortController().signal,
+    ),
+    /response_too_large/u,
+  );
+  assert.equal(cancelled, true);
+});
+
 test("only an exact delivered response exposes credential fields", () => {
   const delivered = parseCredentialDelivery({
     status: "succeeded",
@@ -187,6 +212,7 @@ test("generated output is isolated, exact-origin, and deny-by-default", async ()
   assert.match(headers, /worker-src 'none'/u);
   assert.match(headers, /frame-ancestors 'none'/u);
   assert.match(headers, /Cross-Origin-Opener-Policy: same-origin/u);
+  assert.match(headers, /Strict-Transport-Security: max-age=31536000/u);
   assert.doesNotMatch(html, /WIP|example-token|example-recovery/u);
   assert.doesNotMatch(html, /<form\b/u);
 

@@ -221,12 +221,37 @@ export function parseCredentialDelivery(payload) {
 async function boundedJson(response) {
   const declaredLength = Number(response.headers.get("Content-Length"));
   if (Number.isFinite(declaredLength) && declaredLength > MAX_RESPONSE_BYTES) {
+    await response.body?.cancel("response_too_large").catch(() => undefined);
     throw new Error("response_too_large");
   }
-  const text = await response.text();
-  if (new TextEncoder().encode(text).byteLength > MAX_RESPONSE_BYTES) {
-    throw new Error("response_too_large");
+  if (response.body === null) return null;
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder("utf-8", { ignoreBOM: false });
+  const parts = [];
+  let bytesRead = 0;
+  try {
+    while (true) {
+      const result = await reader.read();
+      if (result.done) {
+        parts.push(decoder.decode());
+        break;
+      }
+      bytesRead += result.value.byteLength;
+      if (bytesRead > MAX_RESPONSE_BYTES) {
+        await reader.cancel("response_too_large").catch(() => undefined);
+        throw new Error("response_too_large");
+      }
+      parts.push(decoder.decode(result.value, { stream: true }));
+    }
+  } catch (error) {
+    await reader.cancel("response_read_failed").catch(() => undefined);
+    throw error;
+  } finally {
+    reader.releaseLock();
   }
+
+  const text = parts.join("");
   try {
     const value = JSON.parse(text);
     return value !== null && typeof value === "object" && !Array.isArray(value) ? value : null;
@@ -336,9 +361,9 @@ export function startSetupApplication({
     busy = value;
     claimButton.disabled = value || config === null || currentDelivery !== null;
     purchaseKeyInput.disabled = value || config === null || currentDelivery !== null;
-    pendingSelect.disabled = value;
-    startNewButton.disabled = value;
-    discardButton.disabled = value || pendingSelect.options.length === 0 || startNew;
+    pendingSelect.disabled = value || currentDelivery !== null;
+    startNewButton.disabled = value || currentDelivery !== null;
+    discardButton.disabled = value || currentDelivery !== null || pendingSelect.options.length === 0 || startNew;
     acknowledgeButton.disabled = value || !savedConfirmation.checked || currentDelivery === null;
   }
 
@@ -366,9 +391,9 @@ export function startSetupApplication({
     pendingPanel.hidden = claims.length === 0;
     if (claims.length === 0) startNew = true;
     startNewButton.textContent = startNew ? "Use selected retry" : "Start another setup";
-    pendingSelect.disabled = busy;
-    startNewButton.disabled = busy;
-    discardButton.disabled = busy || claims.length === 0 || startNew;
+    pendingSelect.disabled = busy || currentDelivery !== null;
+    startNewButton.disabled = busy || currentDelivery !== null;
+    discardButton.disabled = busy || currentDelivery !== null || claims.length === 0 || startNew;
     return claims;
   }
 
@@ -590,6 +615,7 @@ export function startSetupApplication({
     clearMessage();
   });
   startNewButton.addEventListener("click", () => {
+    if (currentDelivery !== null) return;
     startNew = !startNew;
     startNewButton.textContent = startNew ? "Use selected retry" : "Start another setup";
     discardButton.disabled = startNew || pendingSelect.options.length === 0;
@@ -600,6 +626,7 @@ export function startSetupApplication({
     }
   });
   discardButton.addEventListener("click", () => {
+    if (currentDelivery !== null) return;
     const claimKey = selectedClaimKey();
     if (claimKey === null) return;
     if (!windowSource.confirm("Discard this pending retry reference? This cannot be undone in this browser.")) return;
