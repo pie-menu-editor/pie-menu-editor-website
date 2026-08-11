@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="PME-F Repository access, annual update eligibility, privacy, and support terms.">
+  <link rel="canonical" href="https://pie-menu-editor.com/access.html">
+  <title>Access, updates & privacy terms — PME-F</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --background: #cbcbc7;
+      --text: #181818;
+      --muted: #525250;
+      --line: #bdbdb8;
+      --accent: #972c36;
+      --link: #171c52;
+      --content-width: 760px;
+    }
+
+    * { box-sizing: border-box; }
+
+    html {
+      min-height: 100%;
+      font-family: "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif;
+      line-height: 1.65;
+      background:
+        radial-gradient(circle at 50% 15%, #fdfdfb 0, #f1f1ee 23rem, #e2e2de 45rem, transparent 69rem),
+        var(--background);
+      color: var(--text);
+    }
+
+    body { margin: 0; }
+
+    a {
+      color: var(--link);
+      text-decoration-thickness: 0.08em;
+      text-underline-offset: 0.2em;
+    }
+
+    a:hover { color: var(--accent); }
+
+    .wrap {
+      width: min(calc(100% - 2.5rem), var(--content-width));
+      margin-inline: auto;
+    }
+
+    header {
+      border-bottom: 1px solid var(--line);
+      background: rgb(255 255 255 / 18%);
+    }
+
+    header .wrap {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      min-height: 4.5rem;
+      gap: 1rem;
+    }
+
+    .brand {
+      color: var(--text);
+      font-weight: 700;
+      text-decoration: none;
+      letter-spacing: -0.02em;
+    }
+
+    main { padding-block: clamp(3.5rem, 9vw, 6rem); }
+
+    .eyebrow {
+      margin: 0 0 0.8rem;
+      color: var(--accent);
+      font-size: 0.85rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      max-width: 16ch;
+      margin: 0 0 1.5rem;
+      font-size: clamp(2.35rem, 7vw, 4.5rem);
+      line-height: 1;
+      letter-spacing: -0.05em;
+    }
+
+    .lead {
+      max-width: 650px;
+      margin: 0 0 2.5rem;
+      color: var(--muted);
+      font-size: 1.08rem;
+    }
+
+    section {
+      padding-block: 1.8rem;
+      border-top: 1px solid var(--line);
+    }
+
+    h2 {
+      margin: 0 0 0.75rem;
+      font-size: 1.25rem;
+      letter-spacing: -0.02em;
+    }
+
+    p { margin: 0.7rem 0; }
+    section p { color: var(--muted); }
+    strong { color: var(--text); }
+
+    footer {
+      padding-block: 2rem 3rem;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    a:focus-visible {
+      outline: 3px solid var(--link);
+      outline-offset: 3px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap">
+      <a class="brand" href="/">PME-F</a>
+      <a href="mailto:Support@pie-menu-editor.com">Support</a>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <p class="eyebrow">PME-F Repository</p>
+    <h1>Access, updates &amp; privacy terms</h1>
+    <p class="lead">
+      PME-F does not require a PME account, device registration, or DRM. Repository access
+      is verified from the purchase record provided by the vendor used for your order.
+    </p>
+
+    <section>
+      <h2>One year of updates</h2>
+      <p>
+        Your update period starts at the purchase timestamp recorded by the vendor and lasts
+        one calendar year. A renewal adds one year from the later of your current update expiry
+        or the renewal purchase time.
+      </p>
+      <p>
+        Purchases made before this policy took effect receive a transition period through
+        <strong>2027-08-11T20:35:05.557Z</strong>, one year after the public PME-F 2.1 artifact.
+      </p>
+      <p>
+        After expiry, PME-F does not stop working. You may keep using versions already obtained
+        and re-download the last safe, compatible release published during your eligible period.
+        Releases published later are not included.
+      </p>
+      <p>
+        A refunded or disputed purchase loses remote Repository and re-download access. Copies
+        already received are not remotely disabled.
+      </p>
+    </section>
+
+    <section>
+      <h2>Information we keep</h2>
+      <p>
+        We retain the minimum records needed to verify a purchase, provide Repository access and
+        recovery, administer update eligibility, prevent abuse, and provide support. These include
+        a vendor sale ID and purchase status, an opaque PME-F subject ID, entitlement history and
+        expiry, and non-reversible credential fingerprints. The setup page does not save the
+        purchase key you enter. Raw Repository tokens, recovery secrets, purchase keys, and email
+        addresses are not written to PME-F application logs.
+      </p>
+      <p>
+        Repository requests may record the request time, result, requested artifact or version,
+        transfer size, Blender and platform compatibility information, and a daily privacy-preserving
+        network fingerprint derived from a coarse network prefix. PME-F does not store raw IP
+        addresses in its application database. Security-event records are retained for 80 days.
+      </p>
+    </section>
+
+    <section>
+      <h2>Availability and support</h2>
+      <p>
+        The update service is provided on a best-effort basis. Continuous availability, automatic
+        recovery, a fixed release schedule, and compatibility with every future Blender version are
+        not guaranteed. An update-service outage does not disable an installed copy of PME-F.
+      </p>
+      <p>
+        For help, contact <a href="mailto:Support@pie-menu-editor.com">Support@pie-menu-editor.com</a>
+        and include your order ID, PME-F version, Blender version, and a short description of the problem.
+      </p>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <a href="/">Pie Menu Editor Fork</a>
+      &middot;
+      <a href="mailto:Support@pie-menu-editor.com">Support</a>
+    </div>
+  </footer>
+</body>
+</html>

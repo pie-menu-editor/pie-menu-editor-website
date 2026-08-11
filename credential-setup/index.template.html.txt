@@ -25,7 +25,9 @@
     <h1 id="setup-title">Set up PME-F</h1>
     <p class="intro" id="setup-intro">
       Enter the purchase key shown on the page that brought you here. A PME account,
-      password, or device registration is not required.
+      password, or device registration is not required. By continuing, you ask PME-F
+      to verify your purchase and issue Repository access. Read the
+      <a href="https://pie-menu-editor.com/access.html" rel="noreferrer">access, updates &amp; privacy terms</a>.
     </p>
 
     <section class="setup-card" id="verification-panel" aria-labelledby="verify-heading">
@@ -127,6 +129,7 @@
   <footer>
     <div class="wrap">
       Need help? <!--email_off--><a href="mailto:Support@pie-menu-editor.com">Contact PME-F support</a><!--/email_off-->.
+      <a href="https://pie-menu-editor.com/access.html" rel="noreferrer">Privacy &amp; terms</a>.
     </div>
   </footer>
 
