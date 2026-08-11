@@ -15,6 +15,7 @@ test("public pages expose one canonical access and privacy policy", async () => 
   assert.match(setupTemplate, /href="https:\/\/pie-menu-editor\.com\/access"/u);
   assert.match(access, /rel="canonical" href="https:\/\/pie-menu-editor\.com\/access"/u);
   assert.match(access, /one calendar year/u);
+  assert.match(access, /2026-08-12T00:00:00\.000Z/u);
   assert.match(access, /2027-08-11T20:35:05\.557Z/u);
   assert.match(access, /does not stop working/u);
   assert.match(access, /retained for 80 days/u);
