@@ -220,6 +220,7 @@ test("generated output is isolated, exact-origin, and deny-by-default", async ()
   assert.match(html, /id="verification-panel"/u);
   assert.match(html, /id="after-setup-panel"[^>]*hidden/u);
   assert.match(application, /verificationPanel\.hidden = true/u);
+  assert.match(application, /repositoryUrl: `\$\{serviceOrigin\}\/v1\/index\.json`/u);
   assert.match(application, /setupTitle\.textContent = "Save your Repository access"/u);
   assert.match(application, /setupTitle\.textContent = "Setup complete"/u);
   assert.doesNotMatch(application, /Setup was already completed/u);

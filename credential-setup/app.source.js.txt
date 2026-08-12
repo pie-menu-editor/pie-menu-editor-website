@@ -307,7 +307,7 @@ function readConfig(documentSource, locationSource) {
   return {
     setupOrigin,
     serviceOrigin,
-    repositoryUrl: `${serviceOrigin}/v1/`,
+    repositoryUrl: `${serviceOrigin}/v1/index.json`,
     claimUrl: `${serviceOrigin}/v1/claims/gumroad`,
     acknowledgeUrl: `${serviceOrigin}/v1/recovery/delivery/acknowledge`,
   };
