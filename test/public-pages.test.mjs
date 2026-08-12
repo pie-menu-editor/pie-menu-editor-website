@@ -17,6 +17,7 @@ test("public pages expose one canonical access and privacy policy", async () => 
   assert.match(access, /one calendar year/u);
   assert.match(access, /2026-08-12T00:00:00\.000Z/u);
   assert.match(access, /2027-08-11T20:35:05\.557Z/u);
+  assert.match(access, /the later date\s+applies/u);
   assert.match(access, /does not stop working/u);
   assert.match(access, /retained for 80 days/u);
   assert.match(access, /does not require a PME account, device registration, or DRM/u);
