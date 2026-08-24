@@ -11,6 +11,7 @@ import {
   StorageProofError,
   acknowledgementStorageName,
   buildOperationRequest,
+  claimStorageName,
   createIdempotencyKey,
   createLifecycleGuard,
   formatUtcDate,
@@ -64,6 +65,35 @@ test("claim operations remain independent and expire after the last attempt", ()
   );
   assert.equal(storage.getItem(`${CLAIM_STORAGE_PREFIX}${first}`), null);
   assert.equal(storage.getItem(`${CLAIM_STORAGE_PREFIX}${second}`), null);
+});
+
+test("offer claims retry only inside their original public offer namespace", () => {
+  const storage = new FakeStorage();
+  const legacyKey = deterministicKey(24);
+  const annualKey = deterministicKey(25);
+  const threeYearKey = deterministicKey(26);
+  persistClaimOperation(storage, legacyKey, fixedNow);
+  persistClaimOperation(storage, annualKey, fixedNow, "annual_access_1_year_offer_v1");
+  persistClaimOperation(storage, threeYearKey, fixedNow, "annual_access_3_year_offer_v1");
+
+  assert.deepEqual(listPendingClaims(storage, fixedNow).map((entry) => entry.idempotencyKey), [legacyKey]);
+  assert.deepEqual(
+    listPendingClaims(storage, fixedNow, "annual_access_1_year_offer_v1").map((entry) => entry.idempotencyKey),
+    [annualKey],
+  );
+  assert.deepEqual(
+    listPendingClaims(storage, fixedNow, "annual_access_3_year_offer_v1").map((entry) => entry.idempotencyKey),
+    [threeYearKey],
+  );
+  assert.equal(readClaimOperation(storage, annualKey), null);
+  assert.equal(
+    readClaimOperation(storage, annualKey, "annual_access_1_year_offer_v1")?.idempotencyKey,
+    annualKey,
+  );
+  assert.equal(
+    storage.getItem(claimStorageName(annualKey, "annual_access_1_year_offer_v1")) !== null,
+    true,
+  );
 });
 
 test("renewal and reissue retries are isolated and retain no submitted secret", () => {
