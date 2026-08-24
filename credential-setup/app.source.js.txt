@@ -329,11 +329,13 @@ export function parseUpdateAccess(payload, requireState = false) {
   if (payload.status !== "succeeded") return null;
   const access = payload.update_access;
   if (access === null || typeof access !== "object" || Array.isArray(access)) return null;
-  const updatesThrough = canonicalInstant(access.updates_through);
-  if (updatesThrough === null) return null;
+  const updatesThrough = access.updates_through === null ? null : canonicalInstant(access.updates_through);
+  if (access.updates_through !== null && updatesThrough === null) return null;
   const state = access.state;
   if (requireState && state !== "active" && state !== "expired") return null;
   if (!requireState && state !== undefined && state !== "active" && state !== "expired") return null;
+  if (!requireState && updatesThrough === null) return null;
+  if (state === "active" && updatesThrough === null) return null;
   return { updatesThrough, ...(state === undefined ? {} : { state }) };
 }
 
@@ -652,7 +654,9 @@ export function startSetupApplication({
     resultState.textContent = access.state === undefined
       ? ""
       : access.state === "active" ? "Active" : "Expired";
-    resultDate.textContent = `${formatUtcDate(access.updatesThrough)} (UTC)`;
+    resultDate.textContent = access.updatesThrough === null
+      ? "Not available"
+      : `${formatUtcDate(access.updatesThrough)} (UTC)`;
     taskSelector.hidden = false;
     verificationPanel.hidden = true;
     credentialsPanel.hidden = true;
@@ -864,7 +868,9 @@ export function startSetupApplication({
           setMessage(
             "success",
             submittedOperation === "renew" ? "Update extension applied" : "Update access checked",
-            `Updates through ${formatUtcDate(access.updatesThrough)} (UTC).`,
+            access.updatesThrough === null
+              ? "No update-access date is currently available."
+              : `Updates through ${formatUtcDate(access.updatesThrough)} (UTC).`,
           );
           return;
         }

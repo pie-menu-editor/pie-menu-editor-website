@@ -144,11 +144,16 @@ test("update-access responses are bounded to canonical state and UTC date", () =
     status: "succeeded",
     update_access: { updates_through: instant },
   }), { updatesThrough: instant });
+  assert.deepEqual(parseUpdateAccess({
+    status: "succeeded",
+    update_access: { state: "expired", updates_through: null },
+  }, true), { state: "expired", updatesThrough: null });
   assert.equal(formatUtcDate(instant), "August 3, 2029");
   for (const payload of [
     { status: "succeeded", update_access: { updates_through: instant } },
     { status: "succeeded", update_access: { state: "future", updates_through: instant } },
     { status: "succeeded", update_access: { state: "active", updates_through: "2029-08-03" } },
+    { status: "succeeded", update_access: { state: "active", updates_through: null } },
     { status: "failed", update_access: { state: "active", updates_through: instant } },
   ]) {
     assert.equal(parseUpdateAccess(payload, true), null);
