@@ -715,21 +715,22 @@ export function startSetupApplication({
       : null;
   }
 
-  function currentDocumentCanRender(epoch, claimKey) {
+  function currentDocumentCanRender(epoch, operation, claimKey) {
+    const pendingExists = operation === "status"
+      ? true
+      : operation === "claim"
+        ? readClaimOperation(storage, claimKey) !== null
+        : (operation === "renew" || operation === "reissue")
+          && readMutationOperation(storage, operation, claimKey) !== null;
     return guard.isCurrent(epoch)
       && documentSource.visibilityState === "visible"
-      && (
-        currentOperation === "status"
-        || currentOperation === "claim" && readClaimOperation(storage, claimKey) !== null
-        || (currentOperation === "renew" || currentOperation === "reissue")
-          && readMutationOperation(storage, currentOperation, claimKey) !== null
-      );
+      && pendingExists;
   }
 
-  function persistCurrentOperation(idempotencyKey) {
-    return currentOperation === "claim"
+  function persistCurrentOperation(operation, idempotencyKey) {
+    return operation === "claim"
       ? persistClaimOperation(storage, idempotencyKey, now())
-      : persistMutationOperation(storage, currentOperation, idempotencyKey, now());
+      : persistMutationOperation(storage, operation, idempotencyKey, now());
   }
 
   function removeCurrentOperation(idempotencyKey, operation = currentOperation) {
@@ -743,8 +744,8 @@ export function startSetupApplication({
       : operationStorageName(operation, idempotencyKey);
   }
 
-  function renderDelivery(claimKey, delivery) {
-    currentDelivery = { operation: currentOperation, claimKey, ...delivery };
+  function renderDelivery(operation, claimKey, delivery) {
+    currentDelivery = { operation, claimKey, ...delivery };
     purchaseKeyInput.value = "";
     recoveryCredentialInput.value = "";
     repositoryUrl.textContent = config.repositoryUrl;
@@ -756,7 +757,7 @@ export function startSetupApplication({
     setupTitle.scrollIntoView({ behavior: "smooth", block: "start" });
     setMessage(
       "success",
-      currentOperation === "claim" ? "Purchase verified" : "Repository access replaced",
+      operation === "claim" ? "Purchase verified" : "Repository access replaced",
       "Save both credentials, then explicitly finish setup.",
     );
   }
@@ -808,7 +809,7 @@ export function startSetupApplication({
     if (submittedOperation !== "status") {
       try {
         if (claimKey === null) claimKey = createIdempotencyKey(cryptoSource);
-        persistCurrentOperation(claimKey);
+        persistCurrentOperation(submittedOperation, claimKey);
       } catch {
         purchaseKey = "";
         recoveryCredential = "";
@@ -846,7 +847,7 @@ export function startSetupApplication({
 
     try {
       const { response, payload } = await pending;
-      if (!currentDocumentCanRender(operation.epoch, claimKey)) return;
+      if (!currentDocumentCanRender(operation.epoch, submittedOperation, claimKey)) return;
 
       if (response.ok) {
         if (submittedOperation === "renew" || submittedOperation === "status") {
@@ -869,7 +870,7 @@ export function startSetupApplication({
         }
         const delivery = parseCredentialDelivery(payload);
         if (delivery.kind === "delivered") {
-          renderDelivery(claimKey, delivery);
+          renderDelivery(submittedOperation, claimKey, delivery);
           return;
         }
         if (delivery.kind === "terminal" && delivery.status === "delivered_and_acknowledged") {
@@ -922,7 +923,7 @@ export function startSetupApplication({
         );
       }
     } catch (error) {
-      if (error?.name !== "AbortError" && currentDocumentCanRender(operation.epoch, claimKey)) {
+      if (error?.name !== "AbortError" && currentDocumentCanRender(operation.epoch, submittedOperation, claimKey)) {
         setMessage(
           "error",
           "We could not confirm the result",
@@ -964,7 +965,7 @@ export function startSetupApplication({
 
     try {
       const { response, payload } = await pending;
-      if (!currentDocumentCanRender(operation.epoch, delivery.claimKey)) return;
+      if (!currentDocumentCanRender(operation.epoch, delivery.operation, delivery.claimKey)) return;
       const result = response.ok ? parseCredentialDelivery(payload) : null;
       const category = typeof payload?.error === "string" ? payload.error : "unknown_error";
       if (
@@ -985,7 +986,7 @@ export function startSetupApplication({
       }
       setMessage("error", "Finish was not accepted", "Keep both credentials and contact support before discarding this pending setup.");
     } catch (error) {
-      if (error?.name !== "AbortError" && currentDocumentCanRender(operation.epoch, delivery.claimKey)) {
+      if (error?.name !== "AbortError" && currentDocumentCanRender(operation.epoch, delivery.operation, delivery.claimKey)) {
         setMessage("error", "Finish could not be confirmed", "Keep both credentials. The same finish request can be retried.");
       }
     } finally {
