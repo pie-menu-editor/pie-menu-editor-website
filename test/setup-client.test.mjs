@@ -6,19 +6,27 @@ import { test } from "node:test";
 import {
   ACK_STORAGE_PREFIX,
   CLAIM_STORAGE_PREFIX,
+  OPERATION_STORAGE_PREFIX,
   PENDING_RETENTION_MS,
   StorageProofError,
   acknowledgementStorageName,
+  buildOperationRequest,
   createIdempotencyKey,
   createLifecycleGuard,
+  formatUtcDate,
   isCanonicalIdempotencyKey,
   listPendingClaims,
+  listPendingMutations,
   parseCredentialDelivery,
+  parseUpdateAccess,
   persistAcknowledgementOperation,
   persistClaimOperation,
+  persistMutationOperation,
   postJson,
   readAcknowledgementOperation,
   readClaimOperation,
+  readMutationOperation,
+  readSetupRoute,
   removePendingOperations,
 } from "../dist/setup/app.mjs";
 
@@ -56,6 +64,95 @@ test("claim operations remain independent and expire after the last attempt", ()
   );
   assert.equal(storage.getItem(`${CLAIM_STORAGE_PREFIX}${first}`), null);
   assert.equal(storage.getItem(`${CLAIM_STORAGE_PREFIX}${second}`), null);
+});
+
+test("renewal and reissue retries are isolated and retain no submitted secret", () => {
+  const storage = new FakeStorage();
+  const renewalKey = deterministicKey(21);
+  const reissueKey = deterministicKey(22);
+  persistMutationOperation(storage, "renew", renewalKey, fixedNow);
+  persistMutationOperation(storage, "reissue", reissueKey, fixedNow - 1_000);
+
+  assert.equal(readMutationOperation(storage, "renew", renewalKey).operation, "renew");
+  assert.equal(readMutationOperation(storage, "reissue", reissueKey).operation, "reissue");
+  assert.deepEqual(listPendingMutations(storage, "renew", fixedNow), [{
+    operation: "renew",
+    idempotencyKey: renewalKey,
+    lastAttemptAt: fixedNow,
+  }]);
+  assert.deepEqual(listPendingMutations(storage, "reissue", fixedNow).map((entry) => entry.idempotencyKey), [reissueKey]);
+  const serialized = [...storage.values()].join("\n");
+  assert.doesNotMatch(serialized, /license|purchase|recovery|credential|token/u);
+  assert.equal(storage.getItem(`${OPERATION_STORAGE_PREFIX}renew.${renewalKey}`) !== null, true);
+});
+
+test("public setup routes allow only fixed actions and server-owned offer codes", () => {
+  assert.deepEqual(readSetupRoute({ search: "" }), { operation: "claim", offerCode: null });
+  assert.deepEqual(readSetupRoute({ search: "?action=renew" }), { operation: "renew", offerCode: null });
+  assert.deepEqual(readSetupRoute({ search: "?action=status" }), { operation: "status", offerCode: null });
+  assert.deepEqual(readSetupRoute({ search: "?action=replace" }), { operation: "reissue", offerCode: null });
+  assert.deepEqual(readSetupRoute({ search: "?offer=annual_access_3_year_offer_v1" }), {
+    operation: "claim",
+    offerCode: "annual_access_3_year_offer_v1",
+  });
+  for (const search of [
+    "?offer=buyer_selected_years",
+    "?action=renew&offer=annual_access_1_year_offer_v1",
+    "?action=unknown",
+    "?license_key=secret",
+    "?action=status&action=renew",
+  ]) {
+    assert.equal(readSetupRoute({ search }), null);
+  }
+});
+
+test("each setup operation emits only its exact service request fields", () => {
+  const idempotencyKey = deterministicKey(23);
+  const common = {
+    idempotencyKey,
+    purchaseKey: "purchase-key",
+    recoveryCredential: "recovery-secret",
+    offerCode: "annual_access_1_year_offer_v1",
+  };
+  assert.deepEqual(buildOperationRequest("claim", common), {
+    idempotency_key: idempotencyKey,
+    license_key: "purchase-key",
+    offer_code: "annual_access_1_year_offer_v1",
+  });
+  assert.deepEqual(buildOperationRequest("renew", common), {
+    idempotency_key: idempotencyKey,
+    license_key: "purchase-key",
+    recovery_credential: "recovery-secret",
+  });
+  assert.deepEqual(buildOperationRequest("status", common), {
+    recovery_credential: "recovery-secret",
+  });
+  assert.deepEqual(buildOperationRequest("reissue", common), {
+    idempotency_key: idempotencyKey,
+    recovery_credential: "recovery-secret",
+  });
+  assert.throws(() => buildOperationRequest("future-operation", common), /invalid_setup_operation/u);
+});
+
+test("update-access responses are bounded to canonical state and UTC date", () => {
+  const instant = "2029-08-03T00:00:00.000Z";
+  assert.deepEqual(parseUpdateAccess({
+    status: "succeeded",
+    update_access: { state: "active", updates_through: instant },
+  }, true), { state: "active", updatesThrough: instant });
+  assert.deepEqual(parseUpdateAccess({
+    status: "succeeded",
+    update_access: { updates_through: instant },
+  }), { updatesThrough: instant });
+  assert.equal(formatUtcDate(instant), "August 3, 2029");
+  for (const payload of [
+    { status: "succeeded", update_access: { updates_through: instant } },
+    { status: "succeeded", update_access: { state: "future", updates_through: instant } },
+    { status: "succeeded", update_access: { state: "active", updates_through: "2029-08-03" } },
+    { status: "failed", update_access: { state: "active", updates_through: instant } },
+  ]) {
+    assert.equal(parseUpdateAccess(payload, true), null);
+  }
 });
 
 test("durability must be proven by exact storage read-back", () => {
@@ -217,13 +314,23 @@ test("generated output is isolated, exact-origin, and deny-by-default", async ()
   assert.doesNotMatch(html, /<form\b/u);
   assert.doesNotMatch(html, /discard-button|Discard selected retry/u);
   assert.match(html, /id="setup-title">Set up PME-F/u);
+  assert.match(html, /data-operation="claim"/u);
+  assert.match(html, /data-operation="renew"/u);
+  assert.match(html, /data-operation="status"/u);
+  assert.match(html, /data-operation="reissue"/u);
+  assert.doesNotMatch(html, /annual_access_|(?:1|3)[ -]year offer/iu);
   assert.match(html, /id="verification-panel"/u);
+  assert.match(html, /id="result-panel"[^>]*hidden/u);
   assert.match(html, /id="after-setup-panel"[^>]*hidden/u);
   assert.match(application, /verificationPanel\.hidden = true/u);
   assert.match(application, /repositoryUrl: `\$\{serviceOrigin\}\/v1\/index\.json`/u);
+  assert.match(application, /renewalUrl: `\$\{serviceOrigin\}\/v1\/renewals\/gumroad`/u);
+  assert.match(application, /reissueUrl: `\$\{serviceOrigin\}\/v1\/recovery\/reissue`/u);
+  assert.match(application, /statusUrl: `\$\{serviceOrigin\}\/v1\/update-access\/status`/u);
   assert.match(application, /setupTitle\.textContent = "Save your Repository access"/u);
   assert.match(application, /setupTitle\.textContent = "Setup complete"/u);
   assert.doesNotMatch(application, /Setup was already completed/u);
+  assert.doesNotMatch(application, /localStorage.*(?:license|purchase|recovery|credential|token)/iu);
   assert.doesNotMatch(application, /(?:location|history)\.(?:assign|replace|pushState|replaceState)/u);
 
   await assert.rejects(readFile(new URL("setup/index.html", root), "utf8"), { code: "ENOENT" });
@@ -289,6 +396,7 @@ class FakeStorage {
   }
 
   get length() { return this.#values.size; }
+  values() { return this.#values.values(); }
   key(index) { return [...this.#values.keys()][index] ?? null; }
   getItem(name) {
     const value = this.#values.get(name) ?? null;
