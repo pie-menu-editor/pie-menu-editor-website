@@ -30,11 +30,18 @@
       <a href="https://pie-menu-editor.com/access" rel="noreferrer">access, updates &amp; privacy terms</a>.
     </p>
 
+    <nav class="task-selector" id="task-selector" aria-label="Repository access task">
+      <button class="task-button" type="button" data-operation="claim" aria-current="page">Set up Repository</button>
+      <button class="task-button" type="button" data-operation="renew">Extend updates</button>
+      <button class="task-button" type="button" data-operation="status">Check access</button>
+      <button class="task-button" type="button" data-operation="reissue">Replace access</button>
+    </nav>
+
     <section class="setup-card" id="verification-panel" aria-labelledby="verify-heading">
       <h2 id="verify-heading">Verify your purchase</h2>
-      <p>The key is checked against the purchase record and is not saved by this page.</p>
+      <p id="verify-description">The key is checked against the purchase record and is not saved by this page.</p>
 
-      <div class="field-group" role="group" aria-labelledby="purchase-label">
+      <div class="field-group" id="purchase-group" role="group" aria-labelledby="purchase-label">
         <label id="purchase-label" for="purchase-key">Purchase key</label>
         <div class="field-row">
           <input
@@ -51,16 +58,40 @@
             placeholder="Enter your purchase key"
             aria-describedby="purchase-help"
           >
-          <button id="claim-button" type="button">Continue</button>
         </div>
         <p class="field-help" id="purchase-help">
           Do not let a shared browser or password manager save this value.
         </p>
       </div>
 
+      <div class="field-group" id="recovery-group" role="group" aria-labelledby="recovery-label" hidden>
+        <label id="recovery-label" for="recovery-credential">Recovery secret</label>
+        <input
+          id="recovery-credential"
+          name="pme-recovery-proof"
+          type="password"
+          inputmode="text"
+          autocomplete="off"
+          autocapitalize="none"
+          spellcheck="false"
+          data-1p-ignore="true"
+          data-lpignore="true"
+          data-bwignore="true"
+          placeholder="Enter your recovery secret"
+          aria-describedby="recovery-help"
+        >
+        <p class="field-help" id="recovery-help">
+          This value is checked for this request and is not saved by this page.
+        </p>
+      </div>
+
+      <div class="primary-action">
+        <button id="claim-button" type="button">Continue</button>
+      </div>
+
       <div class="pending" id="pending-panel" hidden>
-        <h3>Unfinished setup in this browser</h3>
-        <p>Retry it with the same purchase key to recover a result after a timeout.</p>
+        <h3 id="pending-heading">Unfinished setup in this browser</h3>
+        <p id="pending-description">Retry it with the same purchase key to recover a result after a timeout.</p>
         <label for="pending-select">Pending request</label>
         <select id="pending-select"></select>
         <div class="small-actions">
@@ -114,6 +145,21 @@
         </label>
         <button id="ack-button" type="button" disabled>Finish setup</button>
       </div>
+    </section>
+
+    <section class="result" id="result-panel" aria-labelledby="result-heading" hidden>
+      <h2 id="result-heading">Update access</h2>
+      <p id="result-summary"></p>
+      <dl class="result-details">
+        <div id="result-state-row" hidden>
+          <dt>Status</dt>
+          <dd id="result-state"></dd>
+        </div>
+        <div>
+          <dt>Updates through</dt>
+          <dd id="result-date"></dd>
+        </div>
+      </dl>
     </section>
 
     <section class="next" id="after-setup-panel" aria-labelledby="next-heading" hidden>

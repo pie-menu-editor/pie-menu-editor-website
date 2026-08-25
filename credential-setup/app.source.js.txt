@@ -1,6 +1,13 @@
 export const CLAIM_STORAGE_PREFIX = "pme.setup.claim.";
 export const ACK_STORAGE_PREFIX = "pme.setup.ack.";
+export const OPERATION_STORAGE_PREFIX = "pme.setup.operation.";
 export const PENDING_RETENTION_MS = 8 * 24 * 60 * 60 * 1_000;
+
+export const SETUP_OPERATIONS = Object.freeze(["claim", "renew", "status", "reissue"]);
+export const PUBLIC_OFFER_CODES = Object.freeze([
+  "annual_access_1_year_offer_v1",
+  "annual_access_3_year_offer_v1",
+]);
 
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f]/;
@@ -34,9 +41,12 @@ export function createIdempotencyKey(cryptoSource = globalThis.crypto) {
   return value;
 }
 
-export function claimStorageName(idempotencyKey) {
+export function claimStorageName(idempotencyKey, offerCode = null) {
   if (!isCanonicalIdempotencyKey(idempotencyKey)) throw new TypeError("invalid_idempotency_key");
-  return `${CLAIM_STORAGE_PREFIX}${idempotencyKey}`;
+  if (offerCode !== null && !PUBLIC_OFFER_CODES.includes(offerCode)) throw new TypeError("invalid_offer_code");
+  return offerCode === null
+    ? `${CLAIM_STORAGE_PREFIX}${idempotencyKey}`
+    : `${CLAIM_STORAGE_PREFIX}${offerCode}.${idempotencyKey}`;
 }
 
 export function acknowledgementStorageName(claimIdempotencyKey) {
@@ -48,6 +58,14 @@ function pendingRecord(idempotencyKey, now) {
   return {
     idempotency_key: idempotencyKey,
     last_attempt_at: new Date(now).toISOString(),
+  };
+}
+
+function mutationRecord(operation, idempotencyKey, now) {
+  return {
+    idempotency_key: idempotencyKey,
+    last_attempt_at: new Date(now).toISOString(),
+    operation,
   };
 }
 
@@ -66,6 +84,28 @@ function parsePendingRecord(serialized, expectedKey) {
   }
 }
 
+function parseMutationRecord(serialized, expectedOperation, expectedKey) {
+  if (typeof serialized !== "string") return null;
+  try {
+    const value = JSON.parse(serialized);
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+    if (Object.keys(value).sort().join(",") !== "idempotency_key,last_attempt_at,operation") return null;
+    if (value.operation !== expectedOperation || !["renew", "reissue"].includes(value.operation)) return null;
+    if (value.idempotency_key !== expectedKey || !isCanonicalIdempotencyKey(value.idempotency_key)) return null;
+    const timestamp = Date.parse(value.last_attempt_at);
+    if (!Number.isFinite(timestamp) || new Date(timestamp).toISOString() !== value.last_attempt_at) return null;
+    return { operation: value.operation, idempotencyKey: value.idempotency_key, lastAttemptAt: timestamp };
+  } catch {
+    return null;
+  }
+}
+
+export function operationStorageName(operation, idempotencyKey) {
+  if (!["renew", "reissue"].includes(operation)) throw new TypeError("invalid_mutation_operation");
+  if (!isCanonicalIdempotencyKey(idempotencyKey)) throw new TypeError("invalid_idempotency_key");
+  return `${OPERATION_STORAGE_PREFIX}${operation}.${idempotencyKey}`;
+}
+
 function writeAndReadBack(storage, name, record) {
   const serialized = JSON.stringify(record);
   try {
@@ -77,9 +117,15 @@ function writeAndReadBack(storage, name, record) {
   }
 }
 
-export function persistClaimOperation(storage, idempotencyKey, now = Date.now()) {
-  const name = claimStorageName(idempotencyKey);
+export function persistClaimOperation(storage, idempotencyKey, now = Date.now(), offerCode = null) {
+  const name = claimStorageName(idempotencyKey, offerCode);
   writeAndReadBack(storage, name, pendingRecord(idempotencyKey, now));
+  return idempotencyKey;
+}
+
+export function persistMutationOperation(storage, operation, idempotencyKey, now = Date.now()) {
+  const name = operationStorageName(operation, idempotencyKey);
+  writeAndReadBack(storage, name, mutationRecord(operation, idempotencyKey, now));
   return idempotencyKey;
 }
 
@@ -94,9 +140,21 @@ export function persistAcknowledgementOperation(
   return acknowledgementIdempotencyKey;
 }
 
-export function readClaimOperation(storage, idempotencyKey) {
+export function readClaimOperation(storage, idempotencyKey, offerCode = null) {
   try {
-    return parsePendingRecord(storage.getItem(claimStorageName(idempotencyKey)), idempotencyKey);
+    return parsePendingRecord(storage.getItem(claimStorageName(idempotencyKey, offerCode)), idempotencyKey);
+  } catch {
+    return null;
+  }
+}
+
+export function readMutationOperation(storage, operation, idempotencyKey) {
+  try {
+    return parseMutationRecord(
+      storage.getItem(operationStorageName(operation, idempotencyKey)),
+      operation,
+      idempotencyKey,
+    );
   } catch {
     return null;
   }
@@ -113,16 +171,27 @@ export function readAcknowledgementOperation(storage, claimIdempotencyKey) {
   }
 }
 
-export function removePendingOperations(storage, claimIdempotencyKey) {
+export function removePendingOperations(storage, claimIdempotencyKey, offerCode = null) {
   try {
-    storage.removeItem(claimStorageName(claimIdempotencyKey));
+    storage.removeItem(claimStorageName(claimIdempotencyKey, offerCode));
     storage.removeItem(acknowledgementStorageName(claimIdempotencyKey));
   } catch {
     // An explicit removal is best effort. The entries expire independently.
   }
 }
 
-export function listPendingClaims(storage, now = Date.now()) {
+export function removeMutationOperation(storage, operation, idempotencyKey) {
+  try {
+    storage.removeItem(operationStorageName(operation, idempotencyKey));
+    storage.removeItem(acknowledgementStorageName(idempotencyKey));
+  } catch {
+    // Expiry remains the fallback cleanup.
+  }
+}
+
+export function listPendingClaims(storage, now = Date.now(), offerCode = null) {
+  if (offerCode !== null && !PUBLIC_OFFER_CODES.includes(offerCode)) throw new TypeError("invalid_offer_code");
+  const prefix = offerCode === null ? CLAIM_STORAGE_PREFIX : `${CLAIM_STORAGE_PREFIX}${offerCode}.`;
   const claims = [];
   const invalidOrExpired = [];
   let names;
@@ -133,8 +202,9 @@ export function listPendingClaims(storage, now = Date.now()) {
   }
 
   for (const name of names) {
-    if (typeof name !== "string" || !name.startsWith(CLAIM_STORAGE_PREFIX)) continue;
-    const key = name.slice(CLAIM_STORAGE_PREFIX.length);
+    if (typeof name !== "string" || !name.startsWith(prefix)) continue;
+    const key = name.slice(prefix.length);
+    if (offerCode === null && key.includes(".")) continue;
     let record = null;
     try {
       record = parsePendingRecord(storage.getItem(name), key);
@@ -149,9 +219,43 @@ export function listPendingClaims(storage, now = Date.now()) {
   }
 
   for (const key of invalidOrExpired) {
-    if (isCanonicalIdempotencyKey(key)) removePendingOperations(storage, key);
+    if (isCanonicalIdempotencyKey(key)) removePendingOperations(storage, key, offerCode);
   }
   return claims.sort((left, right) => right.lastAttemptAt - left.lastAttemptAt);
+}
+
+export function listPendingMutations(storage, operation, now = Date.now()) {
+  if (!["renew", "reissue"].includes(operation)) throw new TypeError("invalid_mutation_operation");
+  const prefix = `${OPERATION_STORAGE_PREFIX}${operation}.`;
+  const pending = [];
+  const invalidOrExpired = [];
+  let names;
+  try {
+    names = Array.from({ length: storage.length }, (_, index) => storage.key(index));
+  } catch {
+    throw new StorageProofError();
+  }
+
+  for (const name of names) {
+    if (typeof name !== "string" || !name.startsWith(prefix)) continue;
+    const key = name.slice(prefix.length);
+    let record = null;
+    try {
+      record = parseMutationRecord(storage.getItem(name), operation, key);
+    } catch {
+      throw new StorageProofError();
+    }
+    if (record === null || now - record.lastAttemptAt >= PENDING_RETENTION_MS) {
+      invalidOrExpired.push(key);
+      continue;
+    }
+    pending.push(record);
+  }
+
+  for (const key of invalidOrExpired) {
+    if (isCanonicalIdempotencyKey(key)) removeMutationOperation(storage, operation, key);
+  }
+  return pending.sort((left, right) => right.lastAttemptAt - left.lastAttemptAt);
 }
 
 export function createLifecycleGuard() {
@@ -216,6 +320,75 @@ export function parseCredentialDelivery(payload) {
     return { kind: "terminal", status: delivery.status };
   }
   return { kind: "invalid" };
+}
+
+function canonicalInstant(value) {
+  if (typeof value !== "string") return null;
+  const milliseconds = Date.parse(value);
+  return Number.isFinite(milliseconds) && new Date(milliseconds).toISOString() === value
+    ? value
+    : null;
+}
+
+export function parseUpdateAccess(payload, requireState = false) {
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return null;
+  if (payload.status !== "succeeded") return null;
+  const access = payload.update_access;
+  if (access === null || typeof access !== "object" || Array.isArray(access)) return null;
+  const updatesThrough = access.updates_through === null ? null : canonicalInstant(access.updates_through);
+  if (access.updates_through !== null && updatesThrough === null) return null;
+  const state = access.state;
+  if (requireState && state !== "active" && state !== "expired") return null;
+  if (!requireState && state !== undefined && state !== "active" && state !== "expired") return null;
+  if (!requireState && updatesThrough === null) return null;
+  if (state === "active" && updatesThrough === null) return null;
+  return { updatesThrough, ...(state === undefined ? {} : { state }) };
+}
+
+export function readSetupRoute(locationSource) {
+  try {
+    const parameters = new URLSearchParams(locationSource.search);
+    for (const key of parameters.keys()) {
+      if (key !== "action" && key !== "offer") return null;
+      if (parameters.getAll(key).length !== 1) return null;
+    }
+    const action = parameters.get("action");
+    const operation = action === null
+      ? "claim"
+      : ({ renew: "renew", status: "status", replace: "reissue" })[action] ?? null;
+    if (operation === null) return null;
+    const offerCode = parameters.get("offer");
+    if (offerCode !== null && (operation !== "claim" || !PUBLIC_OFFER_CODES.includes(offerCode))) return null;
+    return { operation, offerCode };
+  } catch {
+    return null;
+  }
+}
+
+export function buildOperationRequest(
+  operation,
+  { idempotencyKey = null, purchaseKey = null, recoveryCredential = null, offerCode = null },
+) {
+  if (!SETUP_OPERATIONS.includes(operation)) throw new TypeError("invalid_setup_operation");
+  const request = {};
+  if (operation !== "status") request.idempotency_key = idempotencyKey;
+  if (operation === "claim" || operation === "renew") request.license_key = purchaseKey;
+  if (operation === "renew" || operation === "status" || operation === "reissue") {
+    request.recovery_credential = recoveryCredential;
+  }
+  if (operation === "claim" && offerCode !== null) request.offer_code = offerCode;
+  return request;
+}
+
+export function formatUtcDate(instant) {
+  const canonical = canonicalInstant(instant);
+  if (canonical === null) throw new TypeError("invalid_instant");
+  return new Intl.DateTimeFormat("en-US", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    timeZone: "UTC",
+  }).format(new Date(canonical));
 }
 
 async function boundedJson(response) {
@@ -303,13 +476,19 @@ function readConfig(documentSource, locationSource) {
   const serviceOrigin = canonicalHttpsOrigin(
     documentSource.querySelector('meta[name="pme-service-origin"]')?.content,
   );
-  if (setupOrigin === null || serviceOrigin === null || locationSource.origin !== setupOrigin) return null;
+  const route = readSetupRoute(locationSource);
+  if (setupOrigin === null || serviceOrigin === null || locationSource.origin !== setupOrigin || route === null) return null;
   return {
     setupOrigin,
     serviceOrigin,
+    initialOperation: route.operation,
+    offerCode: route.offerCode,
     repositoryUrl: `${serviceOrigin}/v1/index.json`,
     claimUrl: `${serviceOrigin}/v1/claims/gumroad`,
+    renewalUrl: `${serviceOrigin}/v1/renewals/gumroad`,
+    reissueUrl: `${serviceOrigin}/v1/recovery/reissue`,
     acknowledgeUrl: `${serviceOrigin}/v1/recovery/delivery/acknowledge`,
+    statusUrl: `${serviceOrigin}/v1/update-access/status`,
   };
 }
 
@@ -326,10 +505,19 @@ export function startSetupApplication({
   const setupEyebrow = documentSource.getElementById("setup-eyebrow");
   const setupTitle = documentSource.getElementById("setup-title");
   const setupIntro = documentSource.getElementById("setup-intro");
+  const taskSelector = documentSource.getElementById("task-selector");
+  const taskButtons = [...documentSource.querySelectorAll(".task-button")];
   const verificationPanel = documentSource.getElementById("verification-panel");
+  const verifyHeading = documentSource.getElementById("verify-heading");
+  const verifyDescription = documentSource.getElementById("verify-description");
+  const purchaseGroup = documentSource.getElementById("purchase-group");
   const purchaseKeyInput = documentSource.getElementById("purchase-key");
+  const recoveryGroup = documentSource.getElementById("recovery-group");
+  const recoveryCredentialInput = documentSource.getElementById("recovery-credential");
   const claimButton = documentSource.getElementById("claim-button");
   const pendingPanel = documentSource.getElementById("pending-panel");
+  const pendingHeading = documentSource.getElementById("pending-heading");
+  const pendingDescription = documentSource.getElementById("pending-description");
   const pendingSelect = documentSource.getElementById("pending-select");
   const startNewButton = documentSource.getElementById("start-new-button");
   const message = documentSource.getElementById("message");
@@ -341,8 +529,15 @@ export function startSetupApplication({
   const recoverySecret = documentSource.getElementById("recovery-secret");
   const savedConfirmation = documentSource.getElementById("saved-confirmation");
   const acknowledgeButton = documentSource.getElementById("ack-button");
+  const resultPanel = documentSource.getElementById("result-panel");
+  const resultHeading = documentSource.getElementById("result-heading");
+  const resultSummary = documentSource.getElementById("result-summary");
+  const resultStateRow = documentSource.getElementById("result-state-row");
+  const resultState = documentSource.getElementById("result-state");
+  const resultDate = documentSource.getElementById("result-date");
   const afterSetupPanel = documentSource.getElementById("after-setup-panel");
 
+  let currentOperation = config?.initialOperation ?? "claim";
   let currentDelivery = null;
   let startNew = false;
   let busy = false;
@@ -361,11 +556,71 @@ export function startSetupApplication({
     delete message.dataset.kind;
   }
 
+  function operationCopy() {
+    return {
+      claim: {
+        eyebrow: "Extension repository",
+        title: "Set up PME-F",
+        intro: "Enter the purchase key shown on the page that brought you here. A PME account, password, or device registration is not required.",
+        heading: "Verify your purchase",
+        description: "The key is checked against the purchase record and is not saved by this page.",
+        action: "Continue",
+      },
+      renew: {
+        eyebrow: "Update access",
+        title: "Extend PME-F updates",
+        intro: "Use an unused update-extension purchase key together with your recovery secret. Existing Repository access remains unchanged.",
+        heading: "Apply an update extension",
+        description: "Both values are checked for this request and are not saved by this page.",
+        action: "Extend updates",
+      },
+      status: {
+        eyebrow: "Update access",
+        title: "Check update access",
+        intro: "Use your recovery secret to check the date through which PME-F updates are available.",
+        heading: "Verify your access",
+        description: "The recovery secret is checked for this request and is not saved by this page.",
+        action: "Check access",
+      },
+      reissue: {
+        eyebrow: "Repository access",
+        title: "Replace Repository access",
+        intro: "Use your recovery secret to invalidate the current Repository token and issue a new token and recovery secret.",
+        heading: "Verify your recovery secret",
+        description: "The current recovery secret is checked for this request and is not saved by this page.",
+        action: "Replace access",
+      },
+    }[currentOperation];
+  }
+
   function showVerificationView() {
-    setupEyebrow.textContent = "Extension repository";
-    setupTitle.textContent = "Set up PME-F";
-    setupIntro.textContent = "Enter the purchase key shown on the page that brought you here. A PME account, password, or device registration is not required.";
+    const copy = operationCopy();
+    setupEyebrow.textContent = copy.eyebrow;
+    setupTitle.textContent = copy.title;
+    setupIntro.textContent = copy.intro;
+    verifyHeading.textContent = copy.heading;
+    verifyDescription.textContent = copy.description;
+    claimButton.textContent = copy.action;
+    purchaseGroup.hidden = currentOperation === "status" || currentOperation === "reissue";
+    recoveryGroup.hidden = currentOperation === "claim";
+    pendingHeading.textContent = currentOperation === "claim"
+      ? "Unfinished setup in this browser"
+      : currentOperation === "renew"
+        ? "Unfinished update extension in this browser"
+        : "Unfinished access replacement in this browser";
+    pendingDescription.textContent = currentOperation === "reissue"
+      ? "Retry it with the same recovery secret to recover a result after a timeout."
+      : currentOperation === "renew"
+        ? "Retry it with the same purchase key and recovery secret to recover a result after a timeout."
+        : "Retry it with the same purchase key to recover a result after a timeout.";
+    for (const button of taskButtons) {
+      if (button.dataset.operation === currentOperation) button.setAttribute("aria-current", "page");
+      else button.removeAttribute("aria-current");
+    }
+    taskSelector.hidden = false;
     verificationPanel.hidden = false;
+    credentialsPanel.hidden = true;
+    resultPanel.hidden = true;
     afterSetupPanel.hidden = true;
   }
 
@@ -373,7 +628,9 @@ export function startSetupApplication({
     setupEyebrow.textContent = "Purchase verified";
     setupTitle.textContent = "Save your Repository access";
     setupIntro.textContent = "Save both credentials before finishing setup. They will not be shown again after confirmation.";
+    taskSelector.hidden = true;
     verificationPanel.hidden = true;
+    resultPanel.hidden = true;
     afterSetupPanel.hidden = false;
   }
 
@@ -381,32 +638,70 @@ export function startSetupApplication({
     setupEyebrow.textContent = "Extension repository";
     setupTitle.textContent = "Setup complete";
     setupIntro.textContent = "The purchase-key form and one-time credentials have been cleared from this page.";
+    taskSelector.hidden = false;
     verificationPanel.hidden = true;
+    resultPanel.hidden = true;
     afterSetupPanel.hidden = false;
+  }
+
+  function showUpdateAccessResult(access, operation) {
+    setupEyebrow.textContent = "Update access";
+    setupTitle.textContent = operation === "renew" ? "Updates extended" : "Update access checked";
+    setupIntro.textContent = operation === "renew"
+      ? "The update extension was applied. Repository credentials were not changed."
+      : "This is the current server-side update-access result for this Repository access.";
+    resultHeading.textContent = operation === "renew" ? "Extension applied" : "Current access";
+    resultSummary.textContent = operation === "renew"
+      ? "Your PME-F update-access date has been updated."
+      : access.state === "active"
+        ? "Update access is active."
+        : "Update access has expired. Eligible earlier releases remain available.";
+    resultStateRow.hidden = access.state === undefined;
+    resultState.textContent = access.state === undefined
+      ? ""
+      : access.state === "active" ? "Active" : "Expired";
+    resultDate.textContent = access.updatesThrough === null
+      ? "Not available"
+      : `${formatUtcDate(access.updatesThrough)} (UTC)`;
+    taskSelector.hidden = false;
+    verificationPanel.hidden = true;
+    credentialsPanel.hidden = true;
+    afterSetupPanel.hidden = true;
+    resultPanel.hidden = false;
   }
 
   function setBusy(value) {
     busy = value;
     claimButton.disabled = value || config === null || currentDelivery !== null;
     purchaseKeyInput.disabled = value || config === null || currentDelivery !== null;
+    recoveryCredentialInput.disabled = value || config === null || currentDelivery !== null;
     pendingSelect.disabled = value || currentDelivery !== null;
     startNewButton.disabled = value || currentDelivery !== null;
     acknowledgeButton.disabled = value || !savedConfirmation.checked || currentDelivery === null;
+    for (const button of taskButtons) button.disabled = value || currentDelivery !== null;
   }
 
   function scrubCredentials() {
     currentDelivery = null;
+    purchaseKeyInput.value = "";
+    recoveryCredentialInput.value = "";
     repositoryUrl.textContent = "";
     repositoryToken.textContent = "";
     recoverySecret.textContent = "";
     savedConfirmation.checked = false;
     credentialsPanel.hidden = true;
     acknowledgeButton.disabled = true;
-    showVerificationView();
+    resultState.textContent = "";
+    resultDate.textContent = "";
+    resultPanel.hidden = true;
   }
 
   function refreshPendingClaims(preferredKey = null) {
-    const claims = listPendingClaims(storage, now());
+    const claims = currentOperation === "claim"
+      ? listPendingClaims(storage, now(), config?.offerCode ?? null)
+      : currentOperation === "renew" || currentOperation === "reissue"
+        ? listPendingMutations(storage, currentOperation, now())
+        : [];
     pendingSelect.replaceChildren();
     for (const claim of claims) {
       const option = documentSource.createElement("option");
@@ -416,9 +711,9 @@ export function startSetupApplication({
     }
     const preferred = claims.find((claim) => claim.idempotencyKey === preferredKey);
     if (preferred !== undefined) pendingSelect.value = preferred.idempotencyKey;
-    pendingPanel.hidden = claims.length === 0;
+    pendingPanel.hidden = claims.length === 0 || currentOperation === "status";
     if (claims.length === 0) startNew = true;
-    startNewButton.textContent = startNew ? "Use selected retry" : "Start another setup";
+    startNewButton.textContent = startNew ? "Use selected retry" : "Start another request";
     pendingSelect.disabled = busy || currentDelivery !== null;
     startNewButton.disabled = busy || currentDelivery !== null;
     return claims;
@@ -430,15 +725,43 @@ export function startSetupApplication({
       : null;
   }
 
-  function currentDocumentCanRender(epoch, claimKey) {
+  function currentDocumentCanRender(epoch, operation, claimKey, offerCode = config?.offerCode ?? null) {
+    const pendingExists = operation === "status"
+      ? true
+      : operation === "claim"
+        ? readClaimOperation(storage, claimKey, offerCode) !== null
+        : (operation === "renew" || operation === "reissue")
+          && readMutationOperation(storage, operation, claimKey) !== null;
     return guard.isCurrent(epoch)
       && documentSource.visibilityState === "visible"
-      && readClaimOperation(storage, claimKey) !== null;
+      && pendingExists;
   }
 
-  function renderDelivery(claimKey, delivery) {
-    currentDelivery = { claimKey, ...delivery };
+  function persistCurrentOperation(operation, idempotencyKey) {
+    return operation === "claim"
+      ? persistClaimOperation(storage, idempotencyKey, now(), config.offerCode)
+      : persistMutationOperation(storage, operation, idempotencyKey, now());
+  }
+
+  function removeCurrentOperation(
+    idempotencyKey,
+    operation = currentOperation,
+    offerCode = config?.offerCode ?? null,
+  ) {
+    if (operation === "claim") removePendingOperations(storage, idempotencyKey, offerCode);
+    else removeMutationOperation(storage, operation, idempotencyKey);
+  }
+
+  function currentOperationStorageName(operation, idempotencyKey, offerCode = config?.offerCode ?? null) {
+    return operation === "claim"
+      ? claimStorageName(idempotencyKey, offerCode)
+      : operationStorageName(operation, idempotencyKey);
+  }
+
+  function renderDelivery(operation, claimKey, delivery) {
+    currentDelivery = { operation, claimKey, offerCode: config.offerCode, ...delivery };
     purchaseKeyInput.value = "";
+    recoveryCredentialInput.value = "";
     repositoryUrl.textContent = config.repositoryUrl;
     repositoryToken.textContent = delivery.repositoryToken;
     recoverySecret.textContent = delivery.recoverySecret;
@@ -446,11 +769,19 @@ export function startSetupApplication({
     showDeliveryView();
     credentialsPanel.hidden = false;
     setupTitle.scrollIntoView({ behavior: "smooth", block: "start" });
-    setMessage("success", "Purchase verified", "Save both credentials, then explicitly finish setup.");
+    setMessage(
+      "success",
+      operation === "claim" ? "Purchase verified" : "Repository access replaced",
+      "Save both credentials, then explicitly finish setup.",
+    );
   }
 
-  function completeWithoutCredentials(claimKey) {
-    removePendingOperations(storage, claimKey);
+  function completeWithoutCredentials(
+    claimKey,
+    operation = currentOperation,
+    offerCode = config?.offerCode ?? null,
+  ) {
+    removeCurrentOperation(claimKey, operation, offerCode);
     scrubCredentials();
     refreshPendingClaims();
     showCompletedView();
@@ -461,61 +792,113 @@ export function startSetupApplication({
     );
   }
 
-  async function submitClaim() {
+  async function submitOperation() {
     if (busy || config === null) return;
+    const submittedOperation = currentOperation;
     clearMessage();
-    scrubCredentials();
-
     let purchaseKey = purchaseKeyInput.value.trim();
-    if (purchaseKey.length === 0 || purchaseKey.length > 512 || CONTROL_CHARACTER_PATTERN.test(purchaseKey)) {
-      purchaseKeyInput.value = "";
-      purchaseKey = "";
+    let recoveryCredential = recoveryCredentialInput.value.trim();
+    const needsPurchase = submittedOperation === "claim" || submittedOperation === "renew";
+    const needsRecovery = submittedOperation === "renew" || submittedOperation === "status" || submittedOperation === "reissue";
+    if (
+      needsPurchase
+      && (purchaseKey.length === 0 || purchaseKey.length > 512 || CONTROL_CHARACTER_PATTERN.test(purchaseKey))
+    ) {
+      scrubCredentials();
+      showVerificationView();
       setMessage("error", "Enter a valid purchase key", "Copy the complete key from your purchase page and try again.");
       return;
     }
-
-    let claimKey = selectedClaimKey();
-    try {
-      if (claimKey === null) claimKey = createIdempotencyKey(cryptoSource);
-      persistClaimOperation(storage, claimKey, now());
-    } catch {
-      purchaseKeyInput.value = "";
-      purchaseKey = "";
-      setMessage(
-        "error",
-        "This browser cannot save the retry reference",
-        "No claim was sent. Enable site storage or use another private browser profile and try again.",
-      );
+    if (
+      needsRecovery
+      && (recoveryCredential.length === 0
+        || recoveryCredential.length > 512
+        || CONTROL_CHARACTER_PATTERN.test(recoveryCredential))
+    ) {
+      scrubCredentials();
+      showVerificationView();
+      setMessage("error", "Enter a valid recovery secret", "Copy the complete recovery secret and try again.");
       return;
+    }
+    scrubCredentials();
+    showVerificationView();
+
+    let claimKey = submittedOperation === "status" ? null : selectedClaimKey();
+    if (submittedOperation !== "status") {
+      try {
+        if (claimKey === null) claimKey = createIdempotencyKey(cryptoSource);
+        persistCurrentOperation(submittedOperation, claimKey);
+      } catch {
+        purchaseKey = "";
+        recoveryCredential = "";
+        setMessage(
+          "error",
+          "This browser cannot save the retry reference",
+          "No request was sent. Enable site storage or use another private browser profile and try again.",
+        );
+        return;
+      }
     }
 
     startNew = false;
-    refreshPendingClaims(claimKey);
+    if (submittedOperation !== "status") refreshPendingClaims(claimKey);
     const operation = guard.begin();
     setBusy(true);
-    let request = { idempotency_key: claimKey, license_key: purchaseKey };
-    purchaseKeyInput.value = "";
+    let request = buildOperationRequest(submittedOperation, {
+      idempotencyKey: claimKey,
+      purchaseKey,
+      recoveryCredential,
+      offerCode: config.offerCode,
+    });
+    const endpoint = {
+      claim: config.claimUrl,
+      renew: config.renewalUrl,
+      status: config.statusUrl,
+      reissue: config.reissueUrl,
+    }[submittedOperation];
+    const pending = postJson(fetchImplementation, endpoint, request, operation.signal);
+    if ("license_key" in request) request.license_key = "";
+    if ("recovery_credential" in request) request.recovery_credential = "";
     purchaseKey = "";
-    const pending = postJson(fetchImplementation, config.claimUrl, request, operation.signal);
-    request.license_key = "";
+    recoveryCredential = "";
     request = null;
 
     try {
       const { response, payload } = await pending;
-      if (!currentDocumentCanRender(operation.epoch, claimKey)) return;
+      if (!currentDocumentCanRender(operation.epoch, submittedOperation, claimKey)) return;
 
       if (response.ok) {
+        if (submittedOperation === "renew" || submittedOperation === "status") {
+          const access = parseUpdateAccess(payload, submittedOperation === "status");
+          if (access === null) {
+            setMessage("error", "The result could not be read", "No secret was retained. Try the request again later.");
+            return;
+          }
+          if (submittedOperation === "renew") {
+            removeCurrentOperation(claimKey, submittedOperation);
+            refreshPendingClaims();
+          }
+          showUpdateAccessResult(access, submittedOperation);
+          setMessage(
+            "success",
+            submittedOperation === "renew" ? "Update extension applied" : "Update access checked",
+            access.updatesThrough === null
+              ? "No update-access date is currently available."
+              : `Updates through ${formatUtcDate(access.updatesThrough)} (UTC).`,
+          );
+          return;
+        }
         const delivery = parseCredentialDelivery(payload);
         if (delivery.kind === "delivered") {
-          renderDelivery(claimKey, delivery);
+          renderDelivery(submittedOperation, claimKey, delivery);
           return;
         }
         if (delivery.kind === "terminal" && delivery.status === "delivered_and_acknowledged") {
-          completeWithoutCredentials(claimKey);
+          completeWithoutCredentials(claimKey, submittedOperation, config.offerCode);
           return;
         }
         if (delivery.kind === "terminal" && (delivery.status === "delivery_expired" || delivery.status === "credential_rotated")) {
-          removePendingOperations(storage, claimKey);
+          removeCurrentOperation(claimKey, submittedOperation);
           refreshPendingClaims();
           setMessage("error", "Repository access must be recovered", "This delivery can no longer be shown. Contact support or use the recovery flow.");
           return;
@@ -532,17 +915,42 @@ export function startSetupApplication({
           "Try another pending request, re-enter its original purchase key, or explicitly start a separate setup.",
         );
       } else if (response.status === 409 || response.status === 429 || response.status >= 500) {
-        setMessage("error", "The result is not final", "The retry reference was kept. Wait a moment, then retry with the same purchase key.");
+        setMessage(
+          "error",
+          "The result is not final",
+          submittedOperation === "status"
+            ? "Wait a moment, then check again."
+            : "The retry reference was kept. Wait a moment, then retry with the same values.",
+        );
       } else if (response.status === 403 && category !== "setup_origin_not_allowed") {
-        removePendingOperations(storage, claimKey);
-        refreshPendingClaims();
-        setMessage("error", "The purchase could not be used", "Check the purchase key. If it was already claimed or should be valid, contact support.");
+        if (submittedOperation !== "status") {
+          removeCurrentOperation(claimKey, submittedOperation);
+          refreshPendingClaims();
+        }
+        const title = submittedOperation === "claim"
+          ? "The purchase could not be used"
+          : submittedOperation === "renew"
+            ? "The update extension could not be applied"
+            : "The recovery secret could not be used";
+        setMessage("error", title, "Check the values and try again. If they should be valid, contact support.");
       } else {
-        setMessage("error", "Setup is temporarily unavailable", "No credential was shown. The retry reference was kept for another attempt.");
+        setMessage(
+          "error",
+          "This request is temporarily unavailable",
+          submittedOperation === "status"
+            ? "No secret was retained. Try again later."
+            : "No credential was shown. The retry reference was kept for another attempt.",
+        );
       }
     } catch (error) {
-      if (error?.name !== "AbortError" && currentDocumentCanRender(operation.epoch, claimKey)) {
-        setMessage("error", "We could not confirm the result", "The retry reference was kept. Retry with the same purchase key.");
+      if (error?.name !== "AbortError" && currentDocumentCanRender(operation.epoch, submittedOperation, claimKey)) {
+        setMessage(
+          "error",
+          "We could not confirm the result",
+          submittedOperation === "status"
+            ? "No secret was retained. Check again later."
+            : "The retry reference was kept. Retry with the same values.",
+        );
       }
     } finally {
       const current = guard.isCurrent(operation.epoch);
@@ -577,14 +985,14 @@ export function startSetupApplication({
 
     try {
       const { response, payload } = await pending;
-      if (!currentDocumentCanRender(operation.epoch, delivery.claimKey)) return;
+      if (!currentDocumentCanRender(operation.epoch, delivery.operation, delivery.claimKey)) return;
       const result = response.ok ? parseCredentialDelivery(payload) : null;
       const category = typeof payload?.error === "string" ? payload.error : "unknown_error";
       if (
         (response.ok && result?.kind === "terminal" && result.status === "delivered_and_acknowledged")
         || (response.status === 403 && category === "delivery_already_acknowledged")
       ) {
-        completeWithoutCredentials(delivery.claimKey);
+        completeWithoutCredentials(delivery.claimKey, delivery.operation, delivery.offerCode);
         return;
       }
       if (response.status === 409 || response.status === 429 || response.status >= 500) {
@@ -598,7 +1006,7 @@ export function startSetupApplication({
       }
       setMessage("error", "Finish was not accepted", "Keep both credentials and contact support before discarding this pending setup.");
     } catch (error) {
-      if (error?.name !== "AbortError" && currentDocumentCanRender(operation.epoch, delivery.claimKey)) {
+      if (error?.name !== "AbortError" && currentDocumentCanRender(operation.epoch, delivery.operation, delivery.claimKey)) {
         setMessage("error", "Finish could not be confirmed", "Keep both credentials. The same finish request can be retried.");
       }
     } finally {
@@ -629,27 +1037,54 @@ export function startSetupApplication({
     }
   }
 
-  claimButton.addEventListener("click", submitClaim);
-  purchaseKeyInput.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      submitClaim();
-    }
-  });
+  claimButton.addEventListener("click", submitOperation);
+  for (const input of [purchaseKeyInput, recoveryCredentialInput]) {
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        submitOperation();
+      }
+    });
+  }
+  for (const button of taskButtons) {
+    button.addEventListener("click", () => {
+      if (busy || currentDelivery !== null || !SETUP_OPERATIONS.includes(button.dataset.operation)) return;
+      guard.invalidate();
+      currentOperation = button.dataset.operation;
+      startNew = false;
+      scrubCredentials();
+      clearMessage();
+      showVerificationView();
+      try {
+        refreshPendingClaims();
+      } catch {
+        setMessage("error", "Browser storage is unavailable", "No change request will be sent from this browser.");
+      }
+      setBusy(false);
+    });
+  }
   pendingSelect.addEventListener("change", () => {
     startNew = false;
-    startNewButton.textContent = "Start another setup";
+    startNewButton.textContent = "Start another request";
     pendingSelect.disabled = false;
     clearMessage();
   });
   startNewButton.addEventListener("click", () => {
     if (currentDelivery !== null) return;
     startNew = !startNew;
-    startNewButton.textContent = startNew ? "Use selected retry" : "Start another setup";
+    startNewButton.textContent = startNew ? "Use selected retry" : "Start another request";
     if (startNew) {
-      setMessage("info", "A separate setup will be started", "Existing pending retries will remain available in this browser.");
+      setMessage("info", "A separate request will be started", "Existing pending retries will remain available in this browser.");
     } else {
-      setMessage("info", "The selected retry will be used", "Enter the same purchase key used for that setup attempt.");
+      setMessage(
+        "info",
+        "The selected retry will be used",
+        currentOperation === "reissue"
+          ? "Enter the same recovery secret used for that request."
+          : currentOperation === "renew"
+            ? "Enter the same purchase key and recovery secret used for that request."
+            : "Enter the same purchase key used for that setup attempt.",
+      );
     }
   });
   savedConfirmation.addEventListener("change", () => setBusy(busy));
@@ -660,29 +1095,30 @@ export function startSetupApplication({
 
   windowSource.addEventListener("storage", (event) => {
     if (currentDelivery === null) return;
-    const claimName = claimStorageName(currentDelivery.claimKey);
+    const claimName = currentOperationStorageName(
+      currentDelivery.operation,
+      currentDelivery.claimKey,
+      currentDelivery.offerCode,
+    );
     if (event.key === null || (event.key === claimName && event.newValue === null)) {
-      const completedClaimKey = currentDelivery.claimKey;
       guard.invalidate();
       scrubCredentials();
       refreshPendingClaims();
       showCompletedView();
-      if (event.key === claimName || readClaimOperation(storage, completedClaimKey) === null) {
-        setMessage("success", "Setup was finished in another tab", "Credential values were removed from this tab.");
-      }
+      setMessage("success", "Setup was finished in another tab", "Credential values were removed from this tab.");
     }
   });
 
   windowSource.addEventListener("pagehide", () => {
     guard.invalidate();
-    purchaseKeyInput.value = "";
     scrubCredentials();
     setBusy(false);
   });
 
   windowSource.addEventListener("pageshow", () => {
-    purchaseKeyInput.value = "";
+    currentOperation = config?.initialOperation ?? "claim";
     scrubCredentials();
+    showVerificationView();
     try {
       refreshPendingClaims();
     } catch {
@@ -692,7 +1128,10 @@ export function startSetupApplication({
 
   documentSource.addEventListener("visibilitychange", () => {
     if (documentSource.visibilityState !== "visible" || currentDelivery === null) return;
-    if (readClaimOperation(storage, currentDelivery.claimKey) === null) {
+    const pendingOperation = currentDelivery.operation === "claim"
+      ? readClaimOperation(storage, currentDelivery.claimKey, currentDelivery.offerCode)
+      : readMutationOperation(storage, currentDelivery.operation, currentDelivery.claimKey);
+    if (pendingOperation === null) {
       guard.invalidate();
       scrubCredentials();
       refreshPendingClaims();
@@ -704,17 +1143,20 @@ export function startSetupApplication({
   if (config === null) {
     claimButton.disabled = true;
     purchaseKeyInput.disabled = true;
+    recoveryCredentialInput.disabled = true;
+    for (const button of taskButtons) button.disabled = true;
     setMessage("error", "Setup is not available at this address", "Return to the purchase page and use its setup link.");
     return { stop: () => guard.invalidate() };
   }
 
   try {
+    showVerificationView();
     refreshPendingClaims();
   } catch {
     claimButton.disabled = true;
     setMessage("error", "Browser storage is unavailable", "No claim will be sent. Enable site storage or use another browser profile.");
   }
-  return { stop: () => { guard.invalidate(); purchaseKeyInput.value = ""; scrubCredentials(); } };
+  return { stop: () => { guard.invalidate(); scrubCredentials(); } };
 }
 
 if (typeof document !== "undefined" && typeof window !== "undefined") {
