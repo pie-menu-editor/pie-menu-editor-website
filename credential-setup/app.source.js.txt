@@ -4,10 +4,6 @@ export const OPERATION_STORAGE_PREFIX = "pme.setup.operation.";
 export const PENDING_RETENTION_MS = 8 * 24 * 60 * 60 * 1_000;
 
 export const SETUP_OPERATIONS = Object.freeze(["claim", "renew", "status", "reissue"]);
-export const PUBLIC_OFFER_CODES = Object.freeze([
-  "annual_access_1_year_offer_v1",
-  "annual_access_3_year_offer_v1",
-]);
 
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f]/;
@@ -41,12 +37,9 @@ export function createIdempotencyKey(cryptoSource = globalThis.crypto) {
   return value;
 }
 
-export function claimStorageName(idempotencyKey, offerCode = null) {
+export function claimStorageName(idempotencyKey) {
   if (!isCanonicalIdempotencyKey(idempotencyKey)) throw new TypeError("invalid_idempotency_key");
-  if (offerCode !== null && !PUBLIC_OFFER_CODES.includes(offerCode)) throw new TypeError("invalid_offer_code");
-  return offerCode === null
-    ? `${CLAIM_STORAGE_PREFIX}${idempotencyKey}`
-    : `${CLAIM_STORAGE_PREFIX}${offerCode}.${idempotencyKey}`;
+  return `${CLAIM_STORAGE_PREFIX}${idempotencyKey}`;
 }
 
 export function acknowledgementStorageName(claimIdempotencyKey) {
@@ -117,8 +110,8 @@ function writeAndReadBack(storage, name, record) {
   }
 }
 
-export function persistClaimOperation(storage, idempotencyKey, now = Date.now(), offerCode = null) {
-  const name = claimStorageName(idempotencyKey, offerCode);
+export function persistClaimOperation(storage, idempotencyKey, now = Date.now()) {
+  const name = claimStorageName(idempotencyKey);
   writeAndReadBack(storage, name, pendingRecord(idempotencyKey, now));
   return idempotencyKey;
 }
@@ -140,9 +133,9 @@ export function persistAcknowledgementOperation(
   return acknowledgementIdempotencyKey;
 }
 
-export function readClaimOperation(storage, idempotencyKey, offerCode = null) {
+export function readClaimOperation(storage, idempotencyKey) {
   try {
-    return parsePendingRecord(storage.getItem(claimStorageName(idempotencyKey, offerCode)), idempotencyKey);
+    return parsePendingRecord(storage.getItem(claimStorageName(idempotencyKey)), idempotencyKey);
   } catch {
     return null;
   }
@@ -171,10 +164,21 @@ export function readAcknowledgementOperation(storage, claimIdempotencyKey) {
   }
 }
 
-export function removePendingOperations(storage, claimIdempotencyKey, offerCode = null) {
+export function removePendingOperations(storage, claimIdempotencyKey) {
   try {
-    storage.removeItem(claimStorageName(claimIdempotencyKey, offerCode));
+    storage.removeItem(claimStorageName(claimIdempotencyKey));
     storage.removeItem(acknowledgementStorageName(claimIdempotencyKey));
+    const legacySuffix = `.${claimIdempotencyKey}`;
+    const names = Array.from({ length: storage.length }, (_, index) => storage.key(index));
+    for (const name of names) {
+      if (
+        typeof name === "string"
+        && name.startsWith(CLAIM_STORAGE_PREFIX)
+        && name.endsWith(legacySuffix)
+      ) {
+        storage.removeItem(name);
+      }
+    }
   } catch {
     // An explicit removal is best effort. The entries expire independently.
   }
@@ -189,11 +193,9 @@ export function removeMutationOperation(storage, operation, idempotencyKey) {
   }
 }
 
-export function listPendingClaims(storage, now = Date.now(), offerCode = null) {
-  if (offerCode !== null && !PUBLIC_OFFER_CODES.includes(offerCode)) throw new TypeError("invalid_offer_code");
-  const prefix = offerCode === null ? CLAIM_STORAGE_PREFIX : `${CLAIM_STORAGE_PREFIX}${offerCode}.`;
-  const claims = [];
-  const invalidOrExpired = [];
+export function listPendingClaims(storage, now = Date.now()) {
+  const claims = new Map();
+  const obsoleteNames = [];
   let names;
   try {
     names = Array.from({ length: storage.length }, (_, index) => storage.key(index));
@@ -202,9 +204,9 @@ export function listPendingClaims(storage, now = Date.now(), offerCode = null) {
   }
 
   for (const name of names) {
-    if (typeof name !== "string" || !name.startsWith(prefix)) continue;
-    const key = name.slice(prefix.length);
-    if (offerCode === null && key.includes(".")) continue;
+    if (typeof name !== "string" || !name.startsWith(CLAIM_STORAGE_PREFIX)) continue;
+    const suffix = name.slice(CLAIM_STORAGE_PREFIX.length);
+    const key = suffix.slice(suffix.lastIndexOf(".") + 1);
     let record = null;
     try {
       record = parsePendingRecord(storage.getItem(name), key);
@@ -212,16 +214,28 @@ export function listPendingClaims(storage, now = Date.now(), offerCode = null) {
       throw new StorageProofError();
     }
     if (record === null || now - record.lastAttemptAt >= PENDING_RETENTION_MS) {
-      invalidOrExpired.push(key);
+      obsoleteNames.push(name);
       continue;
     }
-    claims.push(record);
+    const prior = claims.get(key);
+    if (prior === undefined || prior.lastAttemptAt < record.lastAttemptAt) claims.set(key, record);
+    const canonicalName = claimStorageName(key);
+    if (name !== canonicalName) {
+      const canonical = readClaimOperation(storage, key);
+      if (canonical === null || canonical.lastAttemptAt < record.lastAttemptAt) {
+        writeAndReadBack(storage, canonicalName, pendingRecord(key, record.lastAttemptAt));
+      }
+    }
   }
 
-  for (const key of invalidOrExpired) {
-    if (isCanonicalIdempotencyKey(key)) removePendingOperations(storage, key, offerCode);
+  for (const name of obsoleteNames) {
+    try {
+      storage.removeItem(name);
+    } catch {
+      // Expiry and the next normalization pass remain the fallback cleanup.
+    }
   }
-  return claims.sort((left, right) => right.lastAttemptAt - left.lastAttemptAt);
+  return [...claims.values()].sort((left, right) => right.lastAttemptAt - left.lastAttemptAt);
 }
 
 export function listPendingMutations(storage, operation, now = Date.now()) {
@@ -349,7 +363,7 @@ export function readSetupRoute(locationSource) {
   try {
     const parameters = new URLSearchParams(locationSource.search);
     for (const key of parameters.keys()) {
-      if (key !== "action" && key !== "offer") return null;
+      if (key !== "action") return null;
       if (parameters.getAll(key).length !== 1) return null;
     }
     const action = parameters.get("action");
@@ -357,9 +371,7 @@ export function readSetupRoute(locationSource) {
       ? "claim"
       : ({ renew: "renew", status: "status", replace: "reissue" })[action] ?? null;
     if (operation === null) return null;
-    const offerCode = parameters.get("offer");
-    if (offerCode !== null && (operation !== "claim" || !PUBLIC_OFFER_CODES.includes(offerCode))) return null;
-    return { operation, offerCode };
+    return { operation };
   } catch {
     return null;
   }
@@ -367,7 +379,7 @@ export function readSetupRoute(locationSource) {
 
 export function buildOperationRequest(
   operation,
-  { idempotencyKey = null, purchaseKey = null, recoveryCredential = null, offerCode = null },
+  { idempotencyKey = null, purchaseKey = null, recoveryCredential = null },
 ) {
   if (!SETUP_OPERATIONS.includes(operation)) throw new TypeError("invalid_setup_operation");
   const request = {};
@@ -376,7 +388,6 @@ export function buildOperationRequest(
   if (operation === "renew" || operation === "status" || operation === "reissue") {
     request.recovery_credential = recoveryCredential;
   }
-  if (operation === "claim" && offerCode !== null) request.offer_code = offerCode;
   return request;
 }
 
@@ -482,7 +493,6 @@ function readConfig(documentSource, locationSource) {
     setupOrigin,
     serviceOrigin,
     initialOperation: route.operation,
-    offerCode: route.offerCode,
     repositoryUrl: `${serviceOrigin}/v1/index.json`,
     claimUrl: `${serviceOrigin}/v1/claims/gumroad`,
     renewalUrl: `${serviceOrigin}/v1/renewals/gumroad`,
@@ -698,7 +708,7 @@ export function startSetupApplication({
 
   function refreshPendingClaims(preferredKey = null) {
     const claims = currentOperation === "claim"
-      ? listPendingClaims(storage, now(), config?.offerCode ?? null)
+      ? listPendingClaims(storage, now())
       : currentOperation === "renew" || currentOperation === "reissue"
         ? listPendingMutations(storage, currentOperation, now())
         : [];
@@ -725,11 +735,11 @@ export function startSetupApplication({
       : null;
   }
 
-  function currentDocumentCanRender(epoch, operation, claimKey, offerCode = config?.offerCode ?? null) {
+  function currentDocumentCanRender(epoch, operation, claimKey) {
     const pendingExists = operation === "status"
       ? true
       : operation === "claim"
-        ? readClaimOperation(storage, claimKey, offerCode) !== null
+        ? readClaimOperation(storage, claimKey) !== null
         : (operation === "renew" || operation === "reissue")
           && readMutationOperation(storage, operation, claimKey) !== null;
     return guard.isCurrent(epoch)
@@ -739,27 +749,23 @@ export function startSetupApplication({
 
   function persistCurrentOperation(operation, idempotencyKey) {
     return operation === "claim"
-      ? persistClaimOperation(storage, idempotencyKey, now(), config.offerCode)
+      ? persistClaimOperation(storage, idempotencyKey, now())
       : persistMutationOperation(storage, operation, idempotencyKey, now());
   }
 
-  function removeCurrentOperation(
-    idempotencyKey,
-    operation = currentOperation,
-    offerCode = config?.offerCode ?? null,
-  ) {
-    if (operation === "claim") removePendingOperations(storage, idempotencyKey, offerCode);
+  function removeCurrentOperation(idempotencyKey, operation = currentOperation) {
+    if (operation === "claim") removePendingOperations(storage, idempotencyKey);
     else removeMutationOperation(storage, operation, idempotencyKey);
   }
 
-  function currentOperationStorageName(operation, idempotencyKey, offerCode = config?.offerCode ?? null) {
+  function currentOperationStorageName(operation, idempotencyKey) {
     return operation === "claim"
-      ? claimStorageName(idempotencyKey, offerCode)
+      ? claimStorageName(idempotencyKey)
       : operationStorageName(operation, idempotencyKey);
   }
 
   function renderDelivery(operation, claimKey, delivery) {
-    currentDelivery = { operation, claimKey, offerCode: config.offerCode, ...delivery };
+    currentDelivery = { operation, claimKey, ...delivery };
     purchaseKeyInput.value = "";
     recoveryCredentialInput.value = "";
     repositoryUrl.textContent = config.repositoryUrl;
@@ -776,12 +782,8 @@ export function startSetupApplication({
     );
   }
 
-  function completeWithoutCredentials(
-    claimKey,
-    operation = currentOperation,
-    offerCode = config?.offerCode ?? null,
-  ) {
-    removeCurrentOperation(claimKey, operation, offerCode);
+  function completeWithoutCredentials(claimKey, operation = currentOperation) {
+    removeCurrentOperation(claimKey, operation);
     scrubCredentials();
     refreshPendingClaims();
     showCompletedView();
@@ -848,7 +850,6 @@ export function startSetupApplication({
       idempotencyKey: claimKey,
       purchaseKey,
       recoveryCredential,
-      offerCode: config.offerCode,
     });
     const endpoint = {
       claim: config.claimUrl,
@@ -894,7 +895,7 @@ export function startSetupApplication({
           return;
         }
         if (delivery.kind === "terminal" && delivery.status === "delivered_and_acknowledged") {
-          completeWithoutCredentials(claimKey, submittedOperation, config.offerCode);
+          completeWithoutCredentials(claimKey, submittedOperation);
           return;
         }
         if (delivery.kind === "terminal" && (delivery.status === "delivery_expired" || delivery.status === "credential_rotated")) {
@@ -992,7 +993,7 @@ export function startSetupApplication({
         (response.ok && result?.kind === "terminal" && result.status === "delivered_and_acknowledged")
         || (response.status === 403 && category === "delivery_already_acknowledged")
       ) {
-        completeWithoutCredentials(delivery.claimKey, delivery.operation, delivery.offerCode);
+        completeWithoutCredentials(delivery.claimKey, delivery.operation);
         return;
       }
       if (response.status === 409 || response.status === 429 || response.status >= 500) {
@@ -1098,7 +1099,6 @@ export function startSetupApplication({
     const claimName = currentOperationStorageName(
       currentDelivery.operation,
       currentDelivery.claimKey,
-      currentDelivery.offerCode,
     );
     if (event.key === null || (event.key === claimName && event.newValue === null)) {
       guard.invalidate();
@@ -1129,7 +1129,7 @@ export function startSetupApplication({
   documentSource.addEventListener("visibilitychange", () => {
     if (documentSource.visibilityState !== "visible" || currentDelivery === null) return;
     const pendingOperation = currentDelivery.operation === "claim"
-      ? readClaimOperation(storage, currentDelivery.claimKey, currentDelivery.offerCode)
+      ? readClaimOperation(storage, currentDelivery.claimKey)
       : readMutationOperation(storage, currentDelivery.operation, currentDelivery.claimKey);
     if (pendingOperation === null) {
       guard.invalidate();
