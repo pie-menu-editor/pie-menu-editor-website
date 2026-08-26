@@ -67,33 +67,24 @@ test("claim operations remain independent and expire after the last attempt", ()
   assert.equal(storage.getItem(`${CLAIM_STORAGE_PREFIX}${second}`), null);
 });
 
-test("offer claims retry only inside their original public offer namespace", () => {
+test("legacy offer claim retries migrate without losing an open-tab recovery reference", () => {
   const storage = new FakeStorage();
-  const legacyKey = deterministicKey(24);
-  const annualKey = deterministicKey(25);
-  const threeYearKey = deterministicKey(26);
-  persistClaimOperation(storage, legacyKey, fixedNow);
-  persistClaimOperation(storage, annualKey, fixedNow, "annual_access_1_year_offer_v1");
-  persistClaimOperation(storage, threeYearKey, fixedNow, "annual_access_3_year_offer_v1");
+  const key = deterministicKey(24);
+  const legacyName = `${CLAIM_STORAGE_PREFIX}annual_access_1_year_offer_v1.${key}`;
+  storage.setItem(legacyName, JSON.stringify({
+    idempotency_key: key,
+    last_attempt_at: new Date(fixedNow).toISOString(),
+  }));
 
-  assert.deepEqual(listPendingClaims(storage, fixedNow).map((entry) => entry.idempotencyKey), [legacyKey]);
-  assert.deepEqual(
-    listPendingClaims(storage, fixedNow, "annual_access_1_year_offer_v1").map((entry) => entry.idempotencyKey),
-    [annualKey],
-  );
-  assert.deepEqual(
-    listPendingClaims(storage, fixedNow, "annual_access_3_year_offer_v1").map((entry) => entry.idempotencyKey),
-    [threeYearKey],
-  );
-  assert.equal(readClaimOperation(storage, annualKey), null);
-  assert.equal(
-    readClaimOperation(storage, annualKey, "annual_access_1_year_offer_v1")?.idempotencyKey,
-    annualKey,
-  );
-  assert.equal(
-    storage.getItem(claimStorageName(annualKey, "annual_access_1_year_offer_v1")) !== null,
-    true,
-  );
+  assert.deepEqual(listPendingClaims(storage, fixedNow), [{
+    idempotencyKey: key,
+    lastAttemptAt: fixedNow,
+  }]);
+  assert.notEqual(storage.getItem(legacyName), null);
+  assert.notEqual(storage.getItem(claimStorageName(key)), null);
+  removePendingOperations(storage, key);
+  assert.equal(storage.getItem(legacyName), null);
+  assert.equal(storage.getItem(claimStorageName(key)), null);
 });
 
 test("renewal and reissue retries are isolated and retain no submitted secret", () => {
@@ -116,16 +107,13 @@ test("renewal and reissue retries are isolated and retain no submitted secret", 
   assert.equal(storage.getItem(`${OPERATION_STORAGE_PREFIX}renew.${renewalKey}`) !== null, true);
 });
 
-test("public setup routes allow only fixed actions and server-owned offer codes", () => {
-  assert.deepEqual(readSetupRoute({ search: "" }), { operation: "claim", offerCode: null });
-  assert.deepEqual(readSetupRoute({ search: "?action=renew" }), { operation: "renew", offerCode: null });
-  assert.deepEqual(readSetupRoute({ search: "?action=status" }), { operation: "status", offerCode: null });
-  assert.deepEqual(readSetupRoute({ search: "?action=replace" }), { operation: "reissue", offerCode: null });
-  assert.deepEqual(readSetupRoute({ search: "?offer=annual_access_3_year_offer_v1" }), {
-    operation: "claim",
-    offerCode: "annual_access_3_year_offer_v1",
-  });
+test("public setup routes allow only fixed operations", () => {
+  assert.deepEqual(readSetupRoute({ search: "" }), { operation: "claim" });
+  assert.deepEqual(readSetupRoute({ search: "?action=renew" }), { operation: "renew" });
+  assert.deepEqual(readSetupRoute({ search: "?action=status" }), { operation: "status" });
+  assert.deepEqual(readSetupRoute({ search: "?action=replace" }), { operation: "reissue" });
   for (const search of [
+    "?offer=annual_access_3_year_offer_v1",
     "?offer=buyer_selected_years",
     "?action=renew&offer=annual_access_1_year_offer_v1",
     "?action=unknown",
@@ -142,12 +130,10 @@ test("each setup operation emits only its exact service request fields", () => {
     idempotencyKey,
     purchaseKey: "purchase-key",
     recoveryCredential: "recovery-secret",
-    offerCode: "annual_access_1_year_offer_v1",
   };
   assert.deepEqual(buildOperationRequest("claim", common), {
     idempotency_key: idempotencyKey,
     license_key: "purchase-key",
-    offer_code: "annual_access_1_year_offer_v1",
   });
   assert.deepEqual(buildOperationRequest("renew", common), {
     idempotency_key: idempotencyKey,
@@ -365,6 +351,7 @@ test("generated output is isolated, exact-origin, and deny-by-default", async ()
   assert.match(application, /setupTitle\.textContent = "Save your Repository access"/u);
   assert.match(application, /setupTitle\.textContent = "Setup complete"/u);
   assert.doesNotMatch(application, /Setup was already completed/u);
+  assert.doesNotMatch(application, /PUBLIC_OFFER_CODES|offerCode|offer_code/u);
   assert.doesNotMatch(application, /localStorage.*(?:license|purchase|recovery|credential|token)/iu);
   assert.doesNotMatch(application, /(?:location|history)\.(?:assign|replace|pushState|replaceState)/u);
 
