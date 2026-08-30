@@ -41,6 +41,15 @@
       <h2 id="verify-heading">Verify your purchase</h2>
       <p id="verify-description">The key is checked against the purchase record and is not saved by this page.</p>
 
+      <div class="setup-preview" id="claim-preview">
+        <strong>Before you continue</strong>
+        <p>
+          Have a password manager, or another secure place you can find years from now,
+          ready. After verification, save the Repository access token and Recovery secret
+          before finishing setup.
+        </p>
+      </div>
+
       <div class="field-group" id="purchase-group" role="group" aria-labelledby="purchase-label">
         <label id="purchase-label" for="purchase-key">Purchase key</label>
         <div class="field-row">
@@ -107,13 +116,25 @@
     </div>
 
     <section class="credentials" id="credentials-panel" aria-labelledby="access-heading" hidden>
-      <h2 id="access-heading">Blender Repository settings</h2>
-      <p class="credential-warning">
-        These values are shown only until you confirm that they are saved.
-      </p>
+      <h2 id="access-heading">Your three setup values</h2>
+      <div class="save-warning" role="note">
+        <span class="warning-mark" aria-hidden="true">!</span>
+        <div>
+          <strong>Save before you continue</strong>
+          <p>
+            The Repository access token and Recovery secret will not be shown again after setup.
+          </p>
+        </div>
+      </div>
 
       <div class="credential">
-        <span class="field-label">Repository URL</span>
+        <div class="credential-heading">
+          <span class="credential-number" aria-hidden="true">1</span>
+          <div class="credential-title-group">
+            <span class="field-label">Repository URL</span>
+            <span class="destination-label">Paste this into Blender's <strong>URL</strong> field.</span>
+          </div>
+        </div>
         <div class="value-row">
           <code id="repository-url"></code>
           <button class="copy-button" type="button" data-copy="repository-url">Copy</button>
@@ -121,27 +142,44 @@
       </div>
 
       <div class="credential">
-        <span class="field-label">Repository access token</span>
+        <div class="credential-heading">
+          <span class="credential-number" aria-hidden="true">2</span>
+          <div class="credential-title-group">
+            <span class="field-label">Repository access token</span>
+            <span class="destination-label">Paste this into Blender's <strong>Secret</strong> field.</span>
+          </div>
+          <span class="security-label secret-label">Secret</span>
+        </div>
         <div class="value-row">
           <code id="repository-token"></code>
           <button class="copy-button" type="button" data-copy="repository-token">Copy</button>
         </div>
-        <p class="field-help">Store this token only in Blender's Repository settings.</p>
+        <p class="field-help">Do not share this token. If it is lost or exposed, use the Recovery secret below to replace it.</p>
       </div>
 
-      <div class="recovery">
-        <h2>Recovery secret</h2>
-        <p>Save this outside Blender. You will need it to replace a lost or leaked Repository token.</p>
+      <div class="credential">
+        <div class="credential-heading">
+          <span class="credential-number" aria-hidden="true">3</span>
+          <div class="credential-title-group">
+            <span class="field-label">Recovery secret</span>
+            <span class="destination-label">Save this outside Blender in a password manager.</span>
+          </div>
+          <span class="security-label secret-label">Secret</span>
+        </div>
         <div class="value-row">
           <code id="recovery-secret"></code>
           <button class="copy-button" type="button" data-copy="recovery-secret">Copy</button>
         </div>
+        <p class="field-help">
+          Keep it somewhere you can find years from now. You will need it to extend updates
+          or replace Repository access.
+        </p>
       </div>
 
       <div class="acknowledge">
         <label class="confirmation" for="saved-confirmation">
           <input id="saved-confirmation" type="checkbox" autocomplete="off">
-          I saved the Repository token and recovery secret.
+          I saved the Repository token and Recovery secret.
         </label>
         <button id="ack-button" type="button" disabled>Finish setup</button>
       </div>
@@ -163,12 +201,20 @@
     </section>
 
     <section class="next" id="after-setup-panel" aria-labelledby="next-heading" hidden>
-      <h2 id="next-heading">After setup</h2>
-      <ol>
+      <h2 id="next-heading">Next: install PME-F in Blender</h2>
+      <ol class="next-steps">
         <li>Open Blender Preferences and select <strong>Get Extensions</strong>.</li>
-        <li>Add a remote Repository using the URL and access token.</li>
+        <li>Add a Remote Repository, then paste the saved URL and access token into their matching fields.</li>
         <li>Sync the Repository, then install <strong>Pie Menu Editor Fork</strong>.</li>
       </ol>
+      <a
+        class="next-action"
+        href="https://pluglug.github.io/pme-docs/getting_started/installation.html"
+        target="_blank"
+        rel="noreferrer"
+      >
+        Open Installation Guide <span aria-hidden="true">&rarr;</span>
+      </a>
     </section>
   </main>
 
