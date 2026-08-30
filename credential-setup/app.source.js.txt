@@ -520,6 +520,7 @@ export function startSetupApplication({
   const verificationPanel = documentSource.getElementById("verification-panel");
   const verifyHeading = documentSource.getElementById("verify-heading");
   const verifyDescription = documentSource.getElementById("verify-description");
+  const claimPreview = documentSource.getElementById("claim-preview");
   const purchaseGroup = documentSource.getElementById("purchase-group");
   const purchaseKeyInput = documentSource.getElementById("purchase-key");
   const recoveryGroup = documentSource.getElementById("recovery-group");
@@ -610,6 +611,7 @@ export function startSetupApplication({
     setupIntro.textContent = copy.intro;
     verifyHeading.textContent = copy.heading;
     verifyDescription.textContent = copy.description;
+    claimPreview.hidden = currentOperation !== "claim";
     claimButton.textContent = copy.action;
     purchaseGroup.hidden = currentOperation === "status" || currentOperation === "reissue";
     recoveryGroup.hidden = currentOperation === "claim";
@@ -636,8 +638,8 @@ export function startSetupApplication({
 
   function showDeliveryView() {
     setupEyebrow.textContent = "Purchase verified";
-    setupTitle.textContent = "Save your Repository access";
-    setupIntro.textContent = "Save both credentials before finishing setup. They will not be shown again after confirmation.";
+    setupTitle.textContent = "Save your Repository access information";
+    setupIntro.textContent = "Use each value as shown below, then finish setup.";
     taskSelector.hidden = true;
     verificationPanel.hidden = true;
     resultPanel.hidden = true;
@@ -790,7 +792,7 @@ export function startSetupApplication({
     setMessage(
       "success",
       "Setup complete",
-      "No credential is shown again after acknowledgement. Use your recovery secret if access must be replaced.",
+      "Your one-time credentials are no longer displayed. Keep your Recovery secret for extending updates or replacing access.",
     );
   }
 
