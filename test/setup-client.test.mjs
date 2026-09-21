@@ -67,6 +67,33 @@ test("claim operations remain independent and expire after the last attempt", ()
   assert.equal(storage.getItem(`${CLAIM_STORAGE_PREFIX}${second}`), null);
 });
 
+test("Lemon test claim and acknowledgement retries cannot be merged into legacy Gumroad storage", () => {
+  const storage = new FakeStorage();
+  const key = deterministicKey(30);
+  const ack = deterministicKey(31);
+  persistClaimOperation(storage,key,fixedNow);
+  persistClaimOperation(storage,key,fixedNow + 1,"lemonsqueezy-test");
+  persistAcknowledgementOperation(storage,key,ack,fixedNow,"lemonsqueezy-test");
+  assert.equal(listPendingClaims(storage,fixedNow)[0].lastAttemptAt,fixedNow);
+  assert.equal(listPendingClaims(storage,fixedNow,"lemonsqueezy-test")[0].lastAttemptAt,fixedNow+1);
+  assert.equal(readAcknowledgementOperation(storage,key),null);
+  assert.equal(readAcknowledgementOperation(storage,key,"lemonsqueezy-test").idempotencyKey,ack);
+  assert.notEqual(claimStorageName(key),claimStorageName(key,"lemonsqueezy-test"));
+  assert.deepEqual(Object.keys(JSON.parse(storage.getItem(claimStorageName(key,"lemonsqueezy-test")))).sort(),["idempotency_key","last_attempt_at"]);
+  removePendingOperations(storage,key,"lemonsqueezy-test");
+  assert.equal(readClaimOperation(storage,key,"lemonsqueezy-test"),null);
+  assert.equal(readAcknowledgementOperation(storage,key,"lemonsqueezy-test"),null);
+  assert.equal(readClaimOperation(storage,key).idempotencyKey,key);
+});
+
+test("purchase provider is an exact claim route choice and never a secret-bearing query", () => {
+  assert.deepEqual(readSetupRoute({search:"?provider=lemonsqueezy"}),{operation:"claim",provider:"lemonsqueezy"});
+  assert.deepEqual(readSetupRoute({search:"?provider=gumroad"}),{operation:"claim",provider:"gumroad"});
+  for (const search of ["?provider=unknown","?provider=lemonsqueezy&provider=gumroad",
+    "?provider=lemonsqueezy&action=renew","?provider=lemonsqueezy&license_key=secret",
+    "?provider=lemonsqueezy&mode=live"]) assert.equal(readSetupRoute({search}),null);
+});
+
 test("legacy offer claim retries migrate without losing an open-tab recovery reference", () => {
   const storage = new FakeStorage();
   const key = deterministicKey(24);
@@ -410,6 +437,18 @@ test("build rejects unknown arguments instead of inferring a target", () => {
   );
   assert.notEqual(result.status, 0);
   assert.match(`${result.stderr}${result.stdout}`, /unknown argument/u);
+});
+
+test("Lemon purchase UI can only be enabled in an explicit staging build", async () => {
+  const environment = { ...process.env, PME_SETUP_LEMON_TEST_ENABLED:"true", PME_SETUP_STAGING_SERVICE_ORIGIN:"https://extensions-staging.pie-menu-editor.com" };
+  const production = spawnSync(process.execPath,["tools/build-setup.mjs","--target","production"],{cwd:root,encoding:"utf8",env:environment});
+  assert.notEqual(production.status,0);
+  assert.match(production.stderr,/Lemon test purchases require a staging build/);
+  const staging = spawnSync(process.execPath,["tools/build-setup.mjs","--target","staging","--output","dist/lemon-test"],{cwd:root,encoding:"utf8",env:environment});
+  assert.equal(staging.status,0,staging.stderr);
+  const html = await readFile(new URL("../dist/lemon-test/index.html",import.meta.url),"utf8");
+  assert.match(html,/name="pme-lemon-mode" content="test"/);
+  assert.match(await readFile(new URL("index.html",output),"utf8"),/name="pme-lemon-mode" content="disabled"/);
 });
 
 function deterministicKey(fill) {

@@ -8,6 +8,7 @@
   <meta name="referrer" content="no-referrer">
   <meta name="pme-setup-origin" content="__SETUP_ORIGIN__">
   <meta name="pme-service-origin" content="__SERVICE_ORIGIN__">
+  <meta name="pme-lemon-mode" content="__LEMON_MODE__">
   <link rel="canonical" href="__SETUP_ORIGIN__/">
   <title>Set up PME-F</title>
   <style>__INLINE_STYLE__</style>
@@ -48,6 +49,14 @@
           ready. After verification, save the Repository access token and Recovery secret
           before finishing setup.
         </p>
+      </div>
+
+      <div class="field-group" id="purchase-provider-group" hidden>
+        <label for="purchase-provider">Purchased from</label>
+        <select id="purchase-provider">
+          <option value="gumroad">Gumroad</option>
+          <option value="lemonsqueezy">Lemon Squeezy (test)</option>
+        </select>
       </div>
 
       <div class="field-group" id="purchase-group" role="group" aria-labelledby="purchase-label">

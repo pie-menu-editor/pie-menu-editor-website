@@ -41,7 +41,7 @@ const [template, style, application] = await Promise.all([
 
 const applicationIntegrity = digest("sha384", application);
 const styleIntegrity = digest("sha256", style);
-const html = replaceExactlyOnce(
+let html = replaceExactlyOnce(
   replaceExactlyOnce(
     replaceExactlyOnce(
       replaceExactlyOnce(template, "__SETUP_ORIGIN__", setupOrigin, true),
@@ -55,6 +55,11 @@ const html = replaceExactlyOnce(
   "__APP_INTEGRITY__",
   applicationIntegrity,
 );
+if (process.env.PME_SETUP_LEMON_TEST_ENABLED === "true" && target !== "staging") {
+  throw new Error("Lemon test purchases require a staging build");
+}
+html = replaceExactlyOnce(html, "__LEMON_MODE__",
+  target === "staging" && process.env.PME_SETUP_LEMON_TEST_ENABLED === "true" ? "test" : "disabled");
 
 const contentSecurityPolicy = [
   "default-src 'none'",
