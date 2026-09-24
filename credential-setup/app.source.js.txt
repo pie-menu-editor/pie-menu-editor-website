@@ -538,6 +538,7 @@ export function startSetupApplication({
   const verificationPanel = documentSource.getElementById("verification-panel");
   const verifyHeading = documentSource.getElementById("verify-heading");
   const verifyDescription = documentSource.getElementById("verify-description");
+  const lemonOfferScope = documentSource.getElementById("lemon-offer-scope");
   const claimPreview = documentSource.getElementById("claim-preview");
   const purchaseGroup = documentSource.getElementById("purchase-group");
   const purchaseKeyInput = documentSource.getElementById("purchase-key");
@@ -559,6 +560,8 @@ export function startSetupApplication({
   const repositoryUrl = documentSource.getElementById("repository-url");
   const repositoryToken = documentSource.getElementById("repository-token");
   const recoverySecret = documentSource.getElementById("recovery-secret");
+  const recoverySaveHelp = documentSource.getElementById("recovery-save-help");
+  const gumroadRecoverySaveHelp = recoverySaveHelp.textContent;
   const savedConfirmation = documentSource.getElementById("saved-confirmation");
   const acknowledgeButton = documentSource.getElementById("ack-button");
   const resultPanel = documentSource.getElementById("result-panel");
@@ -598,7 +601,9 @@ export function startSetupApplication({
       claim: {
         eyebrow: "Extension repository",
         title: "Set up PME-F",
-        intro: "Enter the purchase key shown on the page that brought you here. A PME account, password, or device registration is not required.",
+        intro: currentProvider === "lemonsqueezy"
+          ? "Open Setup and enter your Lemon Squeezy license key to receive your Repository token and Recovery secret."
+          : "Enter the purchase key shown on the page that brought you here. A PME account, password, or device registration is not required.",
         heading: "Verify your purchase",
         description: currentProvider === "lemonsqueezy"
           ? "Use the Lemon Squeezy license key from your order. This page does not activate a device or save the key."
@@ -639,6 +644,7 @@ export function startSetupApplication({
     setupIntro.textContent = copy.intro;
     verifyHeading.textContent = copy.heading;
     verifyDescription.textContent = copy.description;
+    lemonOfferScope.hidden = currentOperation !== "claim" || currentProvider !== "lemonsqueezy";
     claimPreview.hidden = currentOperation !== "claim";
     claimButton.textContent = copy.action;
     purchaseGroup.hidden = currentOperation === "status" || currentOperation === "reissue";
@@ -668,8 +674,11 @@ export function startSetupApplication({
     afterSetupPanel.hidden = true;
   }
 
-  function showDeliveryView() {
-    setupEyebrow.textContent = "Purchase verified";
+  function showDeliveryView(operation) {
+    setupEyebrow.textContent = operation === "reissue" ? "Repository access replaced" : "Purchase verified";
+    recoverySaveHelp.textContent = operation === "claim" && currentProvider === "gumroad"
+      ? gumroadRecoverySaveHelp
+      : "Keep your Recovery secret to check Update Access or replace Repository access.";
     setupTitle.textContent = "Save your Repository access information";
     setupIntro.textContent = "Use each value as shown below, then finish setup.";
     taskSelector.hidden = true;
@@ -807,7 +816,7 @@ export function startSetupApplication({
     repositoryToken.textContent = delivery.repositoryToken;
     recoverySecret.textContent = delivery.recoverySecret;
     savedConfirmation.checked = false;
-    showDeliveryView();
+    showDeliveryView(operation);
     credentialsPanel.hidden = false;
     setupTitle.scrollIntoView({ behavior: "smooth", block: "start" });
     setMessage(
@@ -825,7 +834,9 @@ export function startSetupApplication({
     setMessage(
       "success",
       "Setup complete",
-      "Your one-time credentials are no longer displayed. Keep your Recovery secret for extending updates or replacing access.",
+      operation === "claim" && currentProvider === "gumroad"
+        ? "Your one-time credentials are no longer displayed. Keep your Recovery secret for extending updates or replacing access."
+        : "Your one-time credentials are no longer displayed. Keep your Recovery secret to check Update Access or replace Repository access.",
     );
   }
 

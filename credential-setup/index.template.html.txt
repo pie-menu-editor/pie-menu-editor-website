@@ -41,6 +41,7 @@
     <section class="setup-card" id="verification-panel" aria-labelledby="verify-heading">
       <h2 id="verify-heading">Verify your purchase</h2>
       <p id="verify-description">The key is checked against the purchase record and is not saved by this page.</p>
+      <p id="lemon-offer-scope" hidden>New purchases include 1 or 3 years of Update Access. Renewals through Lemon Squeezy are not available yet.</p>
 
       <div class="setup-preview" id="claim-preview">
         <strong>Before you continue</strong>
@@ -179,7 +180,7 @@
           <code id="recovery-secret"></code>
           <button class="copy-button" type="button" data-copy="recovery-secret">Copy</button>
         </div>
-        <p class="field-help">
+        <p class="field-help" id="recovery-save-help">
           Keep it somewhere you can find years from now. You will need it to extend updates
           or replace Repository access.
         </p>
