@@ -602,7 +602,7 @@ export function startSetupApplication({
         eyebrow: "Extension repository",
         title: "Set up PME-F",
         intro: currentProvider === "lemonsqueezy"
-          ? "Open Setup and enter your Lemon Squeezy license key to receive your Repository token and Recovery secret."
+          ? "Enter your Lemon Squeezy license key to receive your Repository token and Recovery secret."
           : "Enter the purchase key shown on the page that brought you here. A PME account, password, or device registration is not required.",
         heading: "Verify your purchase",
         description: currentProvider === "lemonsqueezy"
