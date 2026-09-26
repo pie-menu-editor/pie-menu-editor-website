@@ -58,8 +58,12 @@ let html = replaceExactlyOnce(
 if (process.env.PME_SETUP_LEMON_TEST_ENABLED === "true" && target !== "staging") {
   throw new Error("Lemon test purchases require a staging build");
 }
+if (process.env.PME_SETUP_LEMON_LIVE_ENABLED === "true" && target !== "production") {
+  throw new Error("Lemon live purchases require a production build");
+}
 html = replaceExactlyOnce(html, "__LEMON_MODE__",
-  target === "staging" && process.env.PME_SETUP_LEMON_TEST_ENABLED === "true" ? "test" : "disabled");
+  target === "staging" && process.env.PME_SETUP_LEMON_TEST_ENABLED === "true" ? "test"
+    : target === "production" && process.env.PME_SETUP_LEMON_LIVE_ENABLED === "true" ? "live" : "disabled");
 
 const contentSecurityPolicy = [
   "default-src 'none'",

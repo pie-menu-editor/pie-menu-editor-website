@@ -2,6 +2,7 @@ export const CLAIM_STORAGE_PREFIX = "pme.setup.claim.";
 export const ACK_STORAGE_PREFIX = "pme.setup.ack.";
 export const OPERATION_STORAGE_PREFIX = "pme.setup.operation.";
 const LEMON_TEST_STORAGE_PREFIX = "pme.setup.lemonsqueezy.test.";
+const LEMON_LIVE_STORAGE_PREFIX = "pme.setup.lemonsqueezy.live.";
 export const PENDING_RETENTION_MS = 8 * 24 * 60 * 60 * 1_000;
 
 export const SETUP_OPERATIONS = Object.freeze(["claim", "renew", "status", "reissue"]);
@@ -41,6 +42,7 @@ export function createIdempotencyKey(cryptoSource = globalThis.crypto) {
 function claimStoragePrefix(provider) {
   if (provider === "gumroad") return CLAIM_STORAGE_PREFIX;
   if (provider === "lemonsqueezy-test") return `${LEMON_TEST_STORAGE_PREFIX}claim.`;
+  if (provider === "lemonsqueezy-live") return `${LEMON_LIVE_STORAGE_PREFIX}claim.`;
   throw new TypeError("invalid_purchase_provider");
 }
 
@@ -52,7 +54,9 @@ export function claimStorageName(idempotencyKey, provider = "gumroad") {
 export function acknowledgementStorageName(claimIdempotencyKey, provider = "gumroad") {
   if (!isCanonicalIdempotencyKey(claimIdempotencyKey)) throw new TypeError("invalid_idempotency_key");
   claimStoragePrefix(provider);
-  return `${provider === "gumroad" ? ACK_STORAGE_PREFIX : `${LEMON_TEST_STORAGE_PREFIX}ack.`}${claimIdempotencyKey}`;
+  const prefix = provider === "gumroad" ? ACK_STORAGE_PREFIX
+    : provider === "lemonsqueezy-test" ? `${LEMON_TEST_STORAGE_PREFIX}ack.` : `${LEMON_LIVE_STORAGE_PREFIX}ack.`;
+  return `${prefix}${claimIdempotencyKey}`;
 }
 
 function pendingRecord(idempotencyKey, now) {
@@ -492,7 +496,7 @@ export function canonicalHttpsOrigin(value) {
   }
 }
 
-function readConfig(documentSource, locationSource) {
+export function readConfig(documentSource, locationSource) {
   const setupOrigin = canonicalHttpsOrigin(
     documentSource.querySelector('meta[name="pme-setup-origin"]')?.content,
   );
@@ -501,8 +505,10 @@ function readConfig(documentSource, locationSource) {
   );
   const route = readSetupRoute(locationSource);
   if (setupOrigin === null || serviceOrigin === null || locationSource.origin !== setupOrigin || route === null) return null;
-  const lemonEnabled = documentSource.querySelector('meta[name="pme-lemon-mode"]')?.content === "test"
-    && setupOrigin === "https://setup-staging.pie-menu-editor.com";
+  const lemonMode = documentSource.querySelector('meta[name="pme-lemon-mode"]')?.content;
+  const lemonEnabled = (lemonMode === "test" && setupOrigin === "https://setup-staging.pie-menu-editor.com")
+    || (lemonMode === "live" && setupOrigin === "https://setup.pie-menu-editor.com"
+      && serviceOrigin === "https://extensions.pie-menu-editor.com");
   if (route.provider === "lemonsqueezy" && !lemonEnabled) return null;
   return {
     setupOrigin,
@@ -510,6 +516,7 @@ function readConfig(documentSource, locationSource) {
     initialOperation: route.operation,
     initialProvider: route.provider ?? "gumroad",
     lemonEnabled,
+    lemonMode: lemonEnabled ? lemonMode : null,
     repositoryUrl: `${serviceOrigin}/v1/index.json`,
     claimUrl: `${serviceOrigin}/v1/claims/gumroad`,
     lemonClaimUrl: `${serviceOrigin}/v1/claims/lemonsqueezy`,
@@ -579,7 +586,7 @@ export function startSetupApplication({
   let busy = false;
 
   function pendingProvider(operation = currentOperation) {
-    return operation === "claim" && currentProvider === "lemonsqueezy" ? "lemonsqueezy-test" : "gumroad";
+    return operation === "claim" && currentProvider === "lemonsqueezy" ? `lemonsqueezy-${config.lemonMode}` : "gumroad";
   }
 
   function setMessage(kind, title, body) {
