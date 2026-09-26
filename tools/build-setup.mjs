@@ -61,9 +61,11 @@ if (process.env.PME_SETUP_LEMON_TEST_ENABLED === "true" && target !== "staging")
 if (process.env.PME_SETUP_LEMON_LIVE_ENABLED === "true" && target !== "production") {
   throw new Error("Lemon live purchases require a production build");
 }
-html = replaceExactlyOnce(html, "__LEMON_MODE__",
-  target === "staging" && process.env.PME_SETUP_LEMON_TEST_ENABLED === "true" ? "test"
-    : target === "production" && process.env.PME_SETUP_LEMON_LIVE_ENABLED === "true" ? "live" : "disabled");
+const lemonMode = target === "staging" && process.env.PME_SETUP_LEMON_TEST_ENABLED === "true" ? "test"
+  : target === "production" && process.env.PME_SETUP_LEMON_LIVE_ENABLED === "true" ? "live" : "disabled";
+html = replaceExactlyOnce(html, "__LEMON_MODE__", lemonMode);
+html = replaceExactlyOnce(html, "__LEMON_PROVIDER_LABEL__",
+  lemonMode === "test" ? "Lemon Squeezy (test)" : "Lemon Squeezy");
 
 const contentSecurityPolicy = [
   "default-src 'none'",

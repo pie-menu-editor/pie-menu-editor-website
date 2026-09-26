@@ -56,7 +56,7 @@
         <label for="purchase-provider">Purchased from</label>
         <select id="purchase-provider">
           <option value="gumroad">Gumroad</option>
-          <option value="lemonsqueezy">Lemon Squeezy (test)</option>
+          <option value="lemonsqueezy">__LEMON_PROVIDER_LABEL__</option>
         </select>
       </div>
 
