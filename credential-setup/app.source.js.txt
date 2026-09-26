@@ -1,6 +1,8 @@
 export const CLAIM_STORAGE_PREFIX = "pme.setup.claim.";
 export const ACK_STORAGE_PREFIX = "pme.setup.ack.";
 export const OPERATION_STORAGE_PREFIX = "pme.setup.operation.";
+const LEMON_TEST_STORAGE_PREFIX = "pme.setup.lemonsqueezy.test.";
+const LEMON_LIVE_STORAGE_PREFIX = "pme.setup.lemonsqueezy.live.";
 export const PENDING_RETENTION_MS = 8 * 24 * 60 * 60 * 1_000;
 
 export const SETUP_OPERATIONS = Object.freeze(["claim", "renew", "status", "reissue"]);
@@ -37,14 +39,24 @@ export function createIdempotencyKey(cryptoSource = globalThis.crypto) {
   return value;
 }
 
-export function claimStorageName(idempotencyKey) {
-  if (!isCanonicalIdempotencyKey(idempotencyKey)) throw new TypeError("invalid_idempotency_key");
-  return `${CLAIM_STORAGE_PREFIX}${idempotencyKey}`;
+function claimStoragePrefix(provider) {
+  if (provider === "gumroad") return CLAIM_STORAGE_PREFIX;
+  if (provider === "lemonsqueezy-test") return `${LEMON_TEST_STORAGE_PREFIX}claim.`;
+  if (provider === "lemonsqueezy-live") return `${LEMON_LIVE_STORAGE_PREFIX}claim.`;
+  throw new TypeError("invalid_purchase_provider");
 }
 
-export function acknowledgementStorageName(claimIdempotencyKey) {
+export function claimStorageName(idempotencyKey, provider = "gumroad") {
+  if (!isCanonicalIdempotencyKey(idempotencyKey)) throw new TypeError("invalid_idempotency_key");
+  return `${claimStoragePrefix(provider)}${idempotencyKey}`;
+}
+
+export function acknowledgementStorageName(claimIdempotencyKey, provider = "gumroad") {
   if (!isCanonicalIdempotencyKey(claimIdempotencyKey)) throw new TypeError("invalid_idempotency_key");
-  return `${ACK_STORAGE_PREFIX}${claimIdempotencyKey}`;
+  claimStoragePrefix(provider);
+  const prefix = provider === "gumroad" ? ACK_STORAGE_PREFIX
+    : provider === "lemonsqueezy-test" ? `${LEMON_TEST_STORAGE_PREFIX}ack.` : `${LEMON_LIVE_STORAGE_PREFIX}ack.`;
+  return `${prefix}${claimIdempotencyKey}`;
 }
 
 function pendingRecord(idempotencyKey, now) {
@@ -110,8 +122,8 @@ function writeAndReadBack(storage, name, record) {
   }
 }
 
-export function persistClaimOperation(storage, idempotencyKey, now = Date.now()) {
-  const name = claimStorageName(idempotencyKey);
+export function persistClaimOperation(storage, idempotencyKey, now = Date.now(), provider = "gumroad") {
+  const name = claimStorageName(idempotencyKey, provider);
   writeAndReadBack(storage, name, pendingRecord(idempotencyKey, now));
   return idempotencyKey;
 }
@@ -127,15 +139,16 @@ export function persistAcknowledgementOperation(
   claimIdempotencyKey,
   acknowledgementIdempotencyKey,
   now = Date.now(),
+  provider = "gumroad",
 ) {
-  const name = acknowledgementStorageName(claimIdempotencyKey);
+  const name = acknowledgementStorageName(claimIdempotencyKey, provider);
   writeAndReadBack(storage, name, pendingRecord(acknowledgementIdempotencyKey, now));
   return acknowledgementIdempotencyKey;
 }
 
-export function readClaimOperation(storage, idempotencyKey) {
+export function readClaimOperation(storage, idempotencyKey, provider = "gumroad") {
   try {
-    return parsePendingRecord(storage.getItem(claimStorageName(idempotencyKey)), idempotencyKey);
+    return parsePendingRecord(storage.getItem(claimStorageName(idempotencyKey, provider)), idempotencyKey);
   } catch {
     return null;
   }
@@ -153,9 +166,9 @@ export function readMutationOperation(storage, operation, idempotencyKey) {
   }
 }
 
-export function readAcknowledgementOperation(storage, claimIdempotencyKey) {
+export function readAcknowledgementOperation(storage, claimIdempotencyKey, provider = "gumroad") {
   try {
-    const serialized = storage.getItem(acknowledgementStorageName(claimIdempotencyKey));
+    const serialized = storage.getItem(acknowledgementStorageName(claimIdempotencyKey, provider));
     if (typeof serialized !== "string") return null;
     const parsed = JSON.parse(serialized);
     return parsePendingRecord(serialized, parsed?.idempotency_key);
@@ -164,16 +177,16 @@ export function readAcknowledgementOperation(storage, claimIdempotencyKey) {
   }
 }
 
-export function removePendingOperations(storage, claimIdempotencyKey) {
+export function removePendingOperations(storage, claimIdempotencyKey, provider = "gumroad") {
   try {
-    storage.removeItem(claimStorageName(claimIdempotencyKey));
-    storage.removeItem(acknowledgementStorageName(claimIdempotencyKey));
+    storage.removeItem(claimStorageName(claimIdempotencyKey, provider));
+    storage.removeItem(acknowledgementStorageName(claimIdempotencyKey, provider));
     const legacySuffix = `.${claimIdempotencyKey}`;
     const names = Array.from({ length: storage.length }, (_, index) => storage.key(index));
     for (const name of names) {
       if (
         typeof name === "string"
-        && name.startsWith(CLAIM_STORAGE_PREFIX)
+        && name.startsWith(claimStoragePrefix(provider))
         && name.endsWith(legacySuffix)
       ) {
         storage.removeItem(name);
@@ -193,7 +206,8 @@ export function removeMutationOperation(storage, operation, idempotencyKey) {
   }
 }
 
-export function listPendingClaims(storage, now = Date.now()) {
+export function listPendingClaims(storage, now = Date.now(), provider = "gumroad") {
+  const prefix = claimStoragePrefix(provider);
   const claims = new Map();
   const obsoleteNames = [];
   let names;
@@ -204,8 +218,8 @@ export function listPendingClaims(storage, now = Date.now()) {
   }
 
   for (const name of names) {
-    if (typeof name !== "string" || !name.startsWith(CLAIM_STORAGE_PREFIX)) continue;
-    const suffix = name.slice(CLAIM_STORAGE_PREFIX.length);
+    if (typeof name !== "string" || !name.startsWith(prefix)) continue;
+    const suffix = name.slice(prefix.length);
     const key = suffix.slice(suffix.lastIndexOf(".") + 1);
     let record = null;
     try {
@@ -219,9 +233,9 @@ export function listPendingClaims(storage, now = Date.now()) {
     }
     const prior = claims.get(key);
     if (prior === undefined || prior.lastAttemptAt < record.lastAttemptAt) claims.set(key, record);
-    const canonicalName = claimStorageName(key);
+    const canonicalName = claimStorageName(key, provider);
     if (name !== canonicalName) {
-      const canonical = readClaimOperation(storage, key);
+      const canonical = readClaimOperation(storage, key, provider);
       if (canonical === null || canonical.lastAttemptAt < record.lastAttemptAt) {
         writeAndReadBack(storage, canonicalName, pendingRecord(key, record.lastAttemptAt));
       }
@@ -363,7 +377,7 @@ export function readSetupRoute(locationSource) {
   try {
     const parameters = new URLSearchParams(locationSource.search);
     for (const key of parameters.keys()) {
-      if (key !== "action") return null;
+      if (key !== "action" && key !== "provider") return null;
       if (parameters.getAll(key).length !== 1) return null;
     }
     const action = parameters.get("action");
@@ -371,7 +385,9 @@ export function readSetupRoute(locationSource) {
       ? "claim"
       : ({ renew: "renew", status: "status", replace: "reissue" })[action] ?? null;
     if (operation === null) return null;
-    return { operation };
+    const provider = parameters.get("provider");
+    if (provider !== null && (operation !== "claim" || !["gumroad", "lemonsqueezy"].includes(provider))) return null;
+    return { operation, ...(provider === null ? {} : { provider }) };
   } catch {
     return null;
   }
@@ -480,7 +496,7 @@ export function canonicalHttpsOrigin(value) {
   }
 }
 
-function readConfig(documentSource, locationSource) {
+export function readConfig(documentSource, locationSource) {
   const setupOrigin = canonicalHttpsOrigin(
     documentSource.querySelector('meta[name="pme-setup-origin"]')?.content,
   );
@@ -489,12 +505,21 @@ function readConfig(documentSource, locationSource) {
   );
   const route = readSetupRoute(locationSource);
   if (setupOrigin === null || serviceOrigin === null || locationSource.origin !== setupOrigin || route === null) return null;
+  const lemonMode = documentSource.querySelector('meta[name="pme-lemon-mode"]')?.content;
+  const lemonEnabled = (lemonMode === "test" && setupOrigin === "https://setup-staging.pie-menu-editor.com")
+    || (lemonMode === "live" && setupOrigin === "https://setup.pie-menu-editor.com"
+      && serviceOrigin === "https://extensions.pie-menu-editor.com");
+  if (route.provider === "lemonsqueezy" && !lemonEnabled) return null;
   return {
     setupOrigin,
     serviceOrigin,
     initialOperation: route.operation,
+    initialProvider: route.provider ?? "gumroad",
+    lemonEnabled,
+    lemonMode: lemonEnabled ? lemonMode : null,
     repositoryUrl: `${serviceOrigin}/v1/index.json`,
     claimUrl: `${serviceOrigin}/v1/claims/gumroad`,
+    lemonClaimUrl: `${serviceOrigin}/v1/claims/lemonsqueezy`,
     renewalUrl: `${serviceOrigin}/v1/renewals/gumroad`,
     reissueUrl: `${serviceOrigin}/v1/recovery/reissue`,
     acknowledgeUrl: `${serviceOrigin}/v1/recovery/delivery/acknowledge`,
@@ -520,9 +545,13 @@ export function startSetupApplication({
   const verificationPanel = documentSource.getElementById("verification-panel");
   const verifyHeading = documentSource.getElementById("verify-heading");
   const verifyDescription = documentSource.getElementById("verify-description");
+  const lemonOfferScope = documentSource.getElementById("lemon-offer-scope");
   const claimPreview = documentSource.getElementById("claim-preview");
   const purchaseGroup = documentSource.getElementById("purchase-group");
   const purchaseKeyInput = documentSource.getElementById("purchase-key");
+  const providerGroup = documentSource.getElementById("purchase-provider-group");
+  const providerSelect = documentSource.getElementById("purchase-provider");
+  const purchaseLabel = documentSource.getElementById("purchase-label");
   const recoveryGroup = documentSource.getElementById("recovery-group");
   const recoveryCredentialInput = documentSource.getElementById("recovery-credential");
   const claimButton = documentSource.getElementById("claim-button");
@@ -538,6 +567,8 @@ export function startSetupApplication({
   const repositoryUrl = documentSource.getElementById("repository-url");
   const repositoryToken = documentSource.getElementById("repository-token");
   const recoverySecret = documentSource.getElementById("recovery-secret");
+  const recoverySaveHelp = documentSource.getElementById("recovery-save-help");
+  const gumroadRecoverySaveHelp = recoverySaveHelp.textContent;
   const savedConfirmation = documentSource.getElementById("saved-confirmation");
   const acknowledgeButton = documentSource.getElementById("ack-button");
   const resultPanel = documentSource.getElementById("result-panel");
@@ -549,9 +580,14 @@ export function startSetupApplication({
   const afterSetupPanel = documentSource.getElementById("after-setup-panel");
 
   let currentOperation = config?.initialOperation ?? "claim";
+  let currentProvider = config?.initialProvider ?? "gumroad";
   let currentDelivery = null;
   let startNew = false;
   let busy = false;
+
+  function pendingProvider(operation = currentOperation) {
+    return operation === "claim" && currentProvider === "lemonsqueezy" ? `lemonsqueezy-${config.lemonMode}` : "gumroad";
+  }
 
   function setMessage(kind, title, body) {
     message.dataset.kind = kind;
@@ -572,15 +608,19 @@ export function startSetupApplication({
       claim: {
         eyebrow: "Extension repository",
         title: "Set up PME-F",
-        intro: "Enter the purchase key shown on the page that brought you here. A PME account, password, or device registration is not required.",
+        intro: currentProvider === "lemonsqueezy"
+          ? "Enter your Lemon Squeezy license key to receive your Repository token and Recovery secret."
+          : "Enter the purchase key shown on the page that brought you here. A PME account, password, or device registration is not required.",
         heading: "Verify your purchase",
-        description: "The key is checked against the purchase record and is not saved by this page.",
+        description: currentProvider === "lemonsqueezy"
+          ? "Use the Lemon Squeezy license key from your order. This page does not activate a device or save the key."
+          : "The key is checked against the Gumroad purchase record and is not saved by this page.",
         action: "Continue",
       },
       renew: {
         eyebrow: "Update access",
         title: "Extend PME-F updates",
-        intro: "Use an unused update-extension purchase key together with your recovery secret. Existing Repository access remains unchanged.",
+        intro: "Use an unused Gumroad update-extension purchase key together with your recovery secret. Existing Repository access remains unchanged.",
         heading: "Apply an update extension",
         description: "Both values are checked for this request and are not saved by this page.",
         action: "Extend updates",
@@ -611,9 +651,14 @@ export function startSetupApplication({
     setupIntro.textContent = copy.intro;
     verifyHeading.textContent = copy.heading;
     verifyDescription.textContent = copy.description;
+    lemonOfferScope.hidden = currentOperation !== "claim" || currentProvider !== "lemonsqueezy";
     claimPreview.hidden = currentOperation !== "claim";
     claimButton.textContent = copy.action;
     purchaseGroup.hidden = currentOperation === "status" || currentOperation === "reissue";
+    providerGroup.hidden = currentOperation !== "claim" || !config?.lemonEnabled;
+    providerSelect.value = currentProvider;
+    purchaseLabel.textContent = currentOperation === "claim" && currentProvider === "lemonsqueezy"
+      ? "Lemon Squeezy license key" : "Gumroad purchase key";
     recoveryGroup.hidden = currentOperation === "claim";
     pendingHeading.textContent = currentOperation === "claim"
       ? "Unfinished setup in this browser"
@@ -636,8 +681,11 @@ export function startSetupApplication({
     afterSetupPanel.hidden = true;
   }
 
-  function showDeliveryView() {
-    setupEyebrow.textContent = "Purchase verified";
+  function showDeliveryView(operation) {
+    setupEyebrow.textContent = operation === "reissue" ? "Repository access replaced" : "Purchase verified";
+    recoverySaveHelp.textContent = operation === "claim" && currentProvider === "gumroad"
+      ? gumroadRecoverySaveHelp
+      : "Keep your Recovery secret to check Update Access or replace Repository access.";
     setupTitle.textContent = "Save your Repository access information";
     setupIntro.textContent = "Use each value as shown below, then finish setup.";
     taskSelector.hidden = true;
@@ -686,6 +734,7 @@ export function startSetupApplication({
     busy = value;
     claimButton.disabled = value || config === null || currentDelivery !== null;
     purchaseKeyInput.disabled = value || config === null || currentDelivery !== null;
+    providerSelect.disabled = value || config === null || currentDelivery !== null;
     recoveryCredentialInput.disabled = value || config === null || currentDelivery !== null;
     pendingSelect.disabled = value || currentDelivery !== null;
     startNewButton.disabled = value || currentDelivery !== null;
@@ -710,7 +759,7 @@ export function startSetupApplication({
 
   function refreshPendingClaims(preferredKey = null) {
     const claims = currentOperation === "claim"
-      ? listPendingClaims(storage, now())
+      ? listPendingClaims(storage, now(), pendingProvider())
       : currentOperation === "renew" || currentOperation === "reissue"
         ? listPendingMutations(storage, currentOperation, now())
         : [];
@@ -741,7 +790,7 @@ export function startSetupApplication({
     const pendingExists = operation === "status"
       ? true
       : operation === "claim"
-        ? readClaimOperation(storage, claimKey) !== null
+        ? readClaimOperation(storage, claimKey, pendingProvider(operation)) !== null
         : (operation === "renew" || operation === "reissue")
           && readMutationOperation(storage, operation, claimKey) !== null;
     return guard.isCurrent(epoch)
@@ -751,18 +800,18 @@ export function startSetupApplication({
 
   function persistCurrentOperation(operation, idempotencyKey) {
     return operation === "claim"
-      ? persistClaimOperation(storage, idempotencyKey, now())
+      ? persistClaimOperation(storage, idempotencyKey, now(), pendingProvider(operation))
       : persistMutationOperation(storage, operation, idempotencyKey, now());
   }
 
   function removeCurrentOperation(idempotencyKey, operation = currentOperation) {
-    if (operation === "claim") removePendingOperations(storage, idempotencyKey);
+    if (operation === "claim") removePendingOperations(storage, idempotencyKey, pendingProvider(operation));
     else removeMutationOperation(storage, operation, idempotencyKey);
   }
 
   function currentOperationStorageName(operation, idempotencyKey) {
     return operation === "claim"
-      ? claimStorageName(idempotencyKey)
+      ? claimStorageName(idempotencyKey, pendingProvider(operation))
       : operationStorageName(operation, idempotencyKey);
   }
 
@@ -774,7 +823,7 @@ export function startSetupApplication({
     repositoryToken.textContent = delivery.repositoryToken;
     recoverySecret.textContent = delivery.recoverySecret;
     savedConfirmation.checked = false;
-    showDeliveryView();
+    showDeliveryView(operation);
     credentialsPanel.hidden = false;
     setupTitle.scrollIntoView({ behavior: "smooth", block: "start" });
     setMessage(
@@ -792,7 +841,9 @@ export function startSetupApplication({
     setMessage(
       "success",
       "Setup complete",
-      "Your one-time credentials are no longer displayed. Keep your Recovery secret for extending updates or replacing access.",
+      operation === "claim" && currentProvider === "gumroad"
+        ? "Your one-time credentials are no longer displayed. Keep your Recovery secret for extending updates or replacing access."
+        : "Your one-time credentials are no longer displayed. Keep your Recovery secret to check Update Access or replace Repository access.",
     );
   }
 
@@ -854,7 +905,7 @@ export function startSetupApplication({
       recoveryCredential,
     });
     const endpoint = {
-      claim: config.claimUrl,
+      claim: currentProvider === "lemonsqueezy" ? config.lemonClaimUrl : config.claimUrl,
       renew: config.renewalUrl,
       status: config.statusUrl,
       reissue: config.reissueUrl,
@@ -965,11 +1016,11 @@ export function startSetupApplication({
   async function acknowledgeDelivery() {
     if (busy || config === null || currentDelivery === null || !savedConfirmation.checked) return;
     const delivery = currentDelivery;
-    let acknowledgement = readAcknowledgementOperation(storage, delivery.claimKey);
+    let acknowledgement = readAcknowledgementOperation(storage, delivery.claimKey, pendingProvider(delivery.operation));
     let acknowledgementKey = acknowledgement?.idempotencyKey ?? null;
     try {
       if (acknowledgementKey === null) acknowledgementKey = createIdempotencyKey(cryptoSource);
-      persistAcknowledgementOperation(storage, delivery.claimKey, acknowledgementKey, now());
+      persistAcknowledgementOperation(storage, delivery.claimKey, acknowledgementKey, now(), pendingProvider(delivery.operation));
     } catch {
       setMessage("error", "This browser cannot save the finish retry", "Setup was not acknowledged. Keep both credentials and try again in this browser.");
       return;
@@ -1003,7 +1054,7 @@ export function startSetupApplication({
         return;
       }
       try {
-        storage.removeItem(acknowledgementStorageName(delivery.claimKey));
+        storage.removeItem(acknowledgementStorageName(delivery.claimKey, pendingProvider(delivery.operation)));
       } catch {
         // Expiry remains the fallback cleanup.
       }
@@ -1041,6 +1092,19 @@ export function startSetupApplication({
   }
 
   claimButton.addEventListener("click", submitOperation);
+  providerSelect.addEventListener("change", () => {
+    if (busy || currentDelivery !== null || !config?.lemonEnabled) return;
+    if (!["gumroad", "lemonsqueezy"].includes(providerSelect.value)) return;
+    guard.invalidate();
+    currentProvider = providerSelect.value;
+    startNew = false;
+    scrubCredentials();
+    clearMessage();
+    showVerificationView();
+    try { refreshPendingClaims(); }
+    catch { setMessage("error", "Browser storage is unavailable", "No request will be sent from this browser."); }
+    setBusy(false);
+  });
   for (const input of [purchaseKeyInput, recoveryCredentialInput]) {
     input.addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
@@ -1119,6 +1183,7 @@ export function startSetupApplication({
 
   windowSource.addEventListener("pageshow", () => {
     currentOperation = config?.initialOperation ?? "claim";
+    currentProvider = config?.initialProvider ?? "gumroad";
     scrubCredentials();
     showVerificationView();
     try {
@@ -1131,7 +1196,7 @@ export function startSetupApplication({
   documentSource.addEventListener("visibilitychange", () => {
     if (documentSource.visibilityState !== "visible" || currentDelivery === null) return;
     const pendingOperation = currentDelivery.operation === "claim"
-      ? readClaimOperation(storage, currentDelivery.claimKey)
+      ? readClaimOperation(storage, currentDelivery.claimKey, pendingProvider(currentDelivery.operation))
       : readMutationOperation(storage, currentDelivery.operation, currentDelivery.claimKey);
     if (pendingOperation === null) {
       guard.invalidate();

@@ -26,6 +26,7 @@ import {
   postJson,
   readAcknowledgementOperation,
   readClaimOperation,
+  readConfig,
   readMutationOperation,
   readSetupRoute,
   removePendingOperations,
@@ -65,6 +66,33 @@ test("claim operations remain independent and expire after the last attempt", ()
   );
   assert.equal(storage.getItem(`${CLAIM_STORAGE_PREFIX}${first}`), null);
   assert.equal(storage.getItem(`${CLAIM_STORAGE_PREFIX}${second}`), null);
+});
+
+test("Lemon test claim and acknowledgement retries cannot be merged into legacy Gumroad storage", () => {
+  const storage = new FakeStorage();
+  const key = deterministicKey(30);
+  const ack = deterministicKey(31);
+  persistClaimOperation(storage,key,fixedNow);
+  persistClaimOperation(storage,key,fixedNow + 1,"lemonsqueezy-test");
+  persistAcknowledgementOperation(storage,key,ack,fixedNow,"lemonsqueezy-test");
+  assert.equal(listPendingClaims(storage,fixedNow)[0].lastAttemptAt,fixedNow);
+  assert.equal(listPendingClaims(storage,fixedNow,"lemonsqueezy-test")[0].lastAttemptAt,fixedNow+1);
+  assert.equal(readAcknowledgementOperation(storage,key),null);
+  assert.equal(readAcknowledgementOperation(storage,key,"lemonsqueezy-test").idempotencyKey,ack);
+  assert.notEqual(claimStorageName(key),claimStorageName(key,"lemonsqueezy-test"));
+  assert.deepEqual(Object.keys(JSON.parse(storage.getItem(claimStorageName(key,"lemonsqueezy-test")))).sort(),["idempotency_key","last_attempt_at"]);
+  removePendingOperations(storage,key,"lemonsqueezy-test");
+  assert.equal(readClaimOperation(storage,key,"lemonsqueezy-test"),null);
+  assert.equal(readAcknowledgementOperation(storage,key,"lemonsqueezy-test"),null);
+  assert.equal(readClaimOperation(storage,key).idempotencyKey,key);
+});
+
+test("purchase provider is an exact claim route choice and never a secret-bearing query", () => {
+  assert.deepEqual(readSetupRoute({search:"?provider=lemonsqueezy"}),{operation:"claim",provider:"lemonsqueezy"});
+  assert.deepEqual(readSetupRoute({search:"?provider=gumroad"}),{operation:"claim",provider:"gumroad"});
+  for (const search of ["?provider=unknown","?provider=lemonsqueezy&provider=gumroad",
+    "?provider=lemonsqueezy&action=renew","?provider=lemonsqueezy&license_key=secret",
+    "?provider=lemonsqueezy&mode=live"]) assert.equal(readSetupRoute({search}),null);
 });
 
 test("legacy offer claim retries migrate without losing an open-tab recovery reference", () => {
@@ -410,6 +438,61 @@ test("build rejects unknown arguments instead of inferring a target", () => {
   );
   assert.notEqual(result.status, 0);
   assert.match(`${result.stderr}${result.stdout}`, /unknown argument/u);
+});
+
+test("Lemon test purchase UI requires an explicit staging build", async () => {
+  const environment = { ...process.env, PME_SETUP_LEMON_TEST_ENABLED:"true", PME_SETUP_STAGING_SERVICE_ORIGIN:"https://extensions-staging.pie-menu-editor.com" };
+  const production = spawnSync(process.execPath,["tools/build-setup.mjs","--target","production"],{cwd:root,encoding:"utf8",env:environment});
+  assert.notEqual(production.status,0);
+  assert.match(production.stderr,/Lemon test purchases require a staging build/);
+  const staging = spawnSync(process.execPath,["tools/build-setup.mjs","--target","staging","--output","dist/lemon-test"],{cwd:root,encoding:"utf8",env:environment});
+  assert.equal(staging.status,0,staging.stderr);
+  const html = await readFile(new URL("../dist/lemon-test/index.html",import.meta.url),"utf8");
+  assert.match(html,/name="pme-lemon-mode" content="test"/);
+  assert.match(await readFile(new URL("index.html",output),"utf8"),/name="pme-lemon-mode" content="disabled"/);
+});
+
+test("live Setup is opt-in and refuses test/live origin confusion", async () => {
+  const environment = { ...process.env, PME_SETUP_LEMON_TEST_ENABLED:"false", PME_SETUP_LEMON_LIVE_ENABLED:"true",
+    PME_SETUP_STAGING_SERVICE_ORIGIN:"https://extensions-staging.pie-menu-editor.com" };
+  const production = spawnSync(process.execPath,["tools/build-setup.mjs","--target","production","--output","dist/lemon-live"],
+    {cwd:root,encoding:"utf8",env:environment});
+  assert.equal(production.status,0,production.stderr);
+  const html = await readFile(new URL("../dist/lemon-live/index.html",import.meta.url),"utf8");
+  assert.match(html,/name="pme-lemon-mode" content="live"/);
+  const staging = spawnSync(process.execPath,["tools/build-setup.mjs","--target","staging","--output","dist/lemon-live-invalid"],
+    {cwd:root,encoding:"utf8",env:environment});
+  assert.notEqual(staging.status,0);
+  assert.match(staging.stderr,/Lemon live purchases require a production build/);
+  const config = (setupOrigin, serviceOrigin, mode) => readConfig({
+    querySelector(selector) { return {content:{
+      'meta[name="pme-setup-origin"]':setupOrigin,
+      'meta[name="pme-service-origin"]':serviceOrigin,
+      'meta[name="pme-lemon-mode"]':mode,
+    }[selector]}; },
+  }, {origin:setupOrigin,pathname:"/",search:"?provider=lemonsqueezy",hash:""});
+  const setup = "https://setup.pie-menu-editor.com", service = "https://extensions.pie-menu-editor.com";
+  assert.equal(config(setup,service,"live").lemonMode,"live");
+  assert.equal(config(setup,service,"test"),null);
+  assert.equal(config(setup,service,"disabled"),null);
+  assert.equal(config(setup,"https://extensions-staging.pie-menu-editor.com","live"),null);
+  assert.equal(config("https://setup-staging.pie-menu-editor.com",service,"live"),null);
+});
+
+test("live Lemon retry storage cannot consume or remove Gumroad or test claims", () => {
+  const storage = new FakeStorage(), key = deterministicKey(20), ack = deterministicKey(21);
+  for (const provider of ["gumroad","lemonsqueezy-test","lemonsqueezy-live"]) {
+    persistClaimOperation(storage,key,fixedNow,provider);
+    persistAcknowledgementOperation(storage,key,ack,fixedNow,provider);
+  }
+  assert.equal(new Set(["gumroad","lemonsqueezy-test","lemonsqueezy-live"].map(p=>claimStorageName(key,p))).size,3);
+  removePendingOperations(storage,key,"lemonsqueezy-live");
+  assert.equal(readClaimOperation(storage,key,"lemonsqueezy-live"),null);
+  assert.equal(readAcknowledgementOperation(storage,key,"lemonsqueezy-live"),null);
+  for (const provider of ["gumroad","lemonsqueezy-test"]) {
+    assert.equal(readClaimOperation(storage,key,provider).idempotencyKey,key);
+    assert.equal(readAcknowledgementOperation(storage,key,provider).idempotencyKey,ack);
+  }
 });
 
 function deterministicKey(fill) {
