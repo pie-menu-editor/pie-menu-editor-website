@@ -167,6 +167,10 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 button.secondary { border-color: var(--control-line); background: transparent; color: var(--text); }
 button.quiet { border-color: transparent; background: transparent; color: var(--link); }
 
+#email-recovery-panel button { margin-top: 0.85rem; }
+#email-recovery-cancel { display: block; }
+#email-replace-confirmation { width: auto; min-height: auto; margin-right: 0.45rem; }
+
 .field-help { margin: 0.55rem 0 0; color: var(--muted); font-size: 0.9rem; }
 
 .pending,
