@@ -33,6 +33,7 @@ import {
   readConfig,
   readMutationOperation,
   readSetupRoute,
+  rejectedOperationMessage,
   removePendingOperations,
 } from "../dist/setup/app.mjs";
 
@@ -219,6 +220,31 @@ test("update-access responses are bounded to canonical state and UTC date", () =
   ]) {
     assert.equal(parseUpdateAccess(payload, true), null);
   }
+});
+
+test("an already registered purchase is routed to replacement instead of a value check", () => {
+  const registered = rejectedOperationMessage("claim", "sale_already_claimed");
+  assert.equal(registered.title, "This purchase is already set up");
+  assert.match(registered.body, /Replace access/);
+  assert.match(registered.body, /I lost my Recovery secret/);
+  assert.doesNotMatch(registered.body, /Check the values/);
+
+  const generic = "Check the values and try again. If they should be valid, contact support.";
+  for (const category of ["invalid_license", "wrong_product", "purchase_not_current", "unknown_error"]) {
+    assert.deepEqual(rejectedOperationMessage("claim", category), {
+      title: "The purchase could not be used",
+      body: generic,
+    });
+  }
+  // The category belongs to the claim route only; other operations keep their own copy.
+  assert.deepEqual(rejectedOperationMessage("renew", "sale_already_claimed"), {
+    title: "The update extension could not be applied",
+    body: generic,
+  });
+  assert.deepEqual(rejectedOperationMessage("reissue", "sale_already_claimed"), {
+    title: "The recovery secret could not be used",
+    body: generic,
+  });
 });
 
 test("durability must be proven by exact storage read-back", () => {
