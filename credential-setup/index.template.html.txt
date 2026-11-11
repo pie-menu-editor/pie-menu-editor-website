@@ -107,6 +107,7 @@
       <div class="primary-action">
         <button id="claim-button" type="button">Continue</button>
       </div>
+      <button class="secondary" id="email-recovery-open" type="button" hidden>I lost my Recovery secret</button>
 
       <div class="pending" id="pending-panel" hidden>
         <h3 id="pending-heading">Unfinished setup in this browser</h3>
@@ -118,6 +119,34 @@
         </div>
       </div>
 
+    </section>
+
+    <section class="setup-card" id="email-recovery-panel" aria-labelledby="email-recovery-heading" hidden>
+      <h2 id="email-recovery-heading">Recover through your purchase email</h2>
+      <div id="email-request-fields">
+        <p>We will send a verification code to the email address on your purchase. Your current access stays valid until you confirm replacement.</p>
+        <div class="field-group">
+          <label for="email-provider">Purchased from</label>
+          <select id="email-provider"><option value="gumroad">Gumroad</option><option value="lemonsqueezy">Lemon Squeezy</option></select>
+        </div>
+        <div class="field-group">
+          <label for="email-purchase-key">Purchase key</label>
+          <input id="email-purchase-key" type="password" autocomplete="off" spellcheck="false" data-bwignore="true" data-1p-ignore="true" data-lpignore="true">
+        </div>
+        <button id="email-request-button" type="button">Send recovery email</button>
+      </div>
+      <div id="email-code-fields" hidden>
+        <p>Enter the 8-digit code from the recovery email. The code expires in 30 minutes.</p>
+        <label for="email-code">Verification code</label>
+        <input id="email-code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="8" spellcheck="false">
+        <button id="email-verify-button" type="button">Verify code</button>
+      </div>
+      <div id="email-confirm-fields" hidden>
+        <p>Your current Repository token and Recovery secret will stop working when you replace access. Save the new values on the next screen.</p>
+        <label><input id="email-replace-confirmation" type="checkbox"> I want to replace my current Repository access.</label>
+        <button id="email-confirm-button" type="button" disabled>Replace access</button>
+      </div>
+      <button class="secondary" id="email-recovery-cancel" type="button">Back to Recovery secret</button>
     </section>
 
     <div class="message" id="message" role="status" aria-live="polite" hidden>

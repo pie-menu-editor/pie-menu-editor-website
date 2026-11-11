@@ -14,6 +14,10 @@ import {
   claimStorageName,
   createIdempotencyKey,
   createLifecycleGuard,
+  emailRecoveryRequestId,
+  emailRecoveryFragment,
+  readEmailReceiver,
+  persistEmailReceiver,
   formatUtcDate,
   isCanonicalIdempotencyKey,
   listPendingClaims,
@@ -29,12 +33,26 @@ import {
   readConfig,
   readMutationOperation,
   readSetupRoute,
+  rejectedOperationMessage,
   removePendingOperations,
 } from "../dist/setup/app.mjs";
 
 const root = new URL("../", import.meta.url);
 const output = new URL("../dist/setup/", import.meta.url);
 const fixedNow = Date.parse("2026-08-10T00:00:00.000Z");
+
+test("email recovery keeps receipt authority durable and out of the URL", () => {
+  const id = "9b0f6dce-3457-4a32-a547-5b0f0638aceb";
+  const storage = new FakeStorage();
+  const receiver = { proof: deterministicKey(14), verified: false, createdAt: fixedNow };
+  persistEmailReceiver(storage, id, receiver);
+  assert.deepEqual(readEmailReceiver(storage, id, fixedNow), receiver);
+  assert.equal(readEmailReceiver(storage, id, fixedNow + PENDING_RETENTION_MS), null);
+  assert.equal(emailRecoveryRequestId(emailRecoveryFragment(id)), id);
+  assert.equal(emailRecoveryRequestId(`#email-recovery=${id}&code=12345678`), null);
+  assert.throws(() => emailRecoveryFragment(receiver.proof));
+  assert.throws(() => persistEmailReceiver({setItem() {}, getItem() { return null; }}, id, receiver), StorageProofError);
+});
 
 test("idempotency keys canonically encode 32 random bytes", () => {
   const bytes = Uint8Array.from({ length: 32 }, (_, index) => index);
@@ -202,6 +220,31 @@ test("update-access responses are bounded to canonical state and UTC date", () =
   ]) {
     assert.equal(parseUpdateAccess(payload, true), null);
   }
+});
+
+test("an already registered purchase is routed to replacement instead of a value check", () => {
+  const registered = rejectedOperationMessage("claim", "sale_already_claimed");
+  assert.equal(registered.title, "This purchase is already set up");
+  assert.match(registered.body, /Replace access/);
+  assert.match(registered.body, /I lost my Recovery secret/);
+  assert.doesNotMatch(registered.body, /Check the values/);
+
+  const generic = "Check the values and try again. If they should be valid, contact support.";
+  for (const category of ["invalid_license", "wrong_product", "purchase_not_current", "unknown_error"]) {
+    assert.deepEqual(rejectedOperationMessage("claim", category), {
+      title: "The purchase could not be used",
+      body: generic,
+    });
+  }
+  // The category belongs to the claim route only; other operations keep their own copy.
+  assert.deepEqual(rejectedOperationMessage("renew", "sale_already_claimed"), {
+    title: "The update extension could not be applied",
+    body: generic,
+  });
+  assert.deepEqual(rejectedOperationMessage("reissue", "sale_already_claimed"), {
+    title: "The recovery secret could not be used",
+    body: generic,
+  });
 });
 
 test("durability must be proven by exact storage read-back", () => {
@@ -392,7 +435,9 @@ test("generated output is isolated, exact-origin, and deny-by-default", async ()
   assert.doesNotMatch(application, /Setup was already completed/u);
   assert.doesNotMatch(application, /PUBLIC_OFFER_CODES|offerCode|offer_code/u);
   assert.doesNotMatch(application, /localStorage.*(?:license|purchase|recovery|credential|token)/iu);
-  assert.doesNotMatch(application, /(?:location|history)\.(?:assign|replace|pushState|replaceState)/u);
+  assert.doesNotMatch(application, /(?:location|history)\.(?:assign|replace\(|pushState)/u);
+  assert.equal((application.match(/history\.replaceState/g) ?? []).length, 1);
+  assert.match(application, /history\.replaceState\(null, "", emailRecoveryFragment\(requestId\)\)/u);
 
   await assert.rejects(readFile(new URL("setup/index.html", root), "utf8"), { code: "ENOENT" });
 });

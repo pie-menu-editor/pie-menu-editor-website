@@ -11,6 +11,39 @@ const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f]/;
 const MAX_RESPONSE_BYTES = 32_768;
 const MAX_DELIVERY_FIELD_LENGTH = 4_096;
+const EMAIL_RECEIVER_PREFIX = "pme.setup.email-receiver.";
+const EMAIL_REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export function emailRecoveryRequestId(hash) {
+  const id = typeof hash === "string" && hash.startsWith("#email-recovery=") ? hash.slice(16) : "";
+  return EMAIL_REQUEST_ID.test(id) ? id : null;
+}
+
+export function emailRecoveryFragment(requestId) {
+  if (requestId === null) return "#";
+  if (!EMAIL_REQUEST_ID.test(requestId)) throw new TypeError("invalid_recovery_request_id");
+  return `#email-recovery=${requestId}`;
+}
+
+export function readEmailReceiver(storage, requestId, timestamp = Date.now()) {
+  if (!EMAIL_REQUEST_ID.test(requestId)) return null;
+  try {
+    const record = JSON.parse(storage.getItem(EMAIL_RECEIVER_PREFIX + requestId));
+    if (record && Object.keys(record).sort().join(",") === "createdAt,proof,verified"
+        && isCanonicalIdempotencyKey(record.proof) && typeof record.verified === "boolean"
+        && Number.isFinite(record.createdAt) && record.createdAt <= timestamp
+        && timestamp - record.createdAt < PENDING_RETENTION_MS) return record;
+  } catch { /* An absent or invalid record never authorizes a request. */ }
+  return null;
+}
+
+export function persistEmailReceiver(storage, requestId, record) {
+  if (!EMAIL_REQUEST_ID.test(requestId) || !isCanonicalIdempotencyKey(record.proof)) throw new StorageProofError();
+  // Save before verification binds the server request to this browser. No code or credential is saved.
+  writeAndReadBack(storage, EMAIL_RECEIVER_PREFIX + requestId, {
+    proof: record.proof, verified: record.verified === true, createdAt: record.createdAt,
+  });
+}
 
 export class StorageProofError extends Error {
   constructor() {
@@ -418,6 +451,30 @@ export function formatUtcDate(instant) {
   }).format(new Date(canonical));
 }
 
+/**
+ * Copy for a terminal 403 on a setup operation. `sale_already_claimed` is only
+ * returned after the provider accepted the key, so the customer must be sent to
+ * the replacement flow instead of being told to re-check a valid value.
+ */
+export function rejectedOperationMessage(operation, category) {
+  if (operation === "claim" && category === "sale_already_claimed") {
+    return {
+      title: "This purchase is already set up",
+      body: "Your purchase key is valid, but Repository setup runs only once per purchase. "
+        + "To get a new Repository token, open Replace access and use your Recovery secret, "
+        + "or select \"I lost my Recovery secret\" there.",
+    };
+  }
+  return {
+    title: operation === "claim"
+      ? "The purchase could not be used"
+      : operation === "renew"
+        ? "The update extension could not be applied"
+        : "The recovery secret could not be used",
+    body: "Check the values and try again. If they should be valid, contact support.",
+  };
+}
+
 async function boundedJson(response) {
   const declaredLength = Number(response.headers.get("Content-Length"));
   if (Number.isFinite(declaredLength) && declaredLength > MAX_RESPONSE_BYTES) {
@@ -578,6 +635,24 @@ export function startSetupApplication({
   const resultState = documentSource.getElementById("result-state");
   const resultDate = documentSource.getElementById("result-date");
   const afterSetupPanel = documentSource.getElementById("after-setup-panel");
+  const emailPanel = documentSource.getElementById("email-recovery-panel");
+  const emailOpen = documentSource.getElementById("email-recovery-open");
+  const emailRequestFields = documentSource.getElementById("email-request-fields");
+  const emailCodeFields = documentSource.getElementById("email-code-fields");
+  const emailConfirmFields = documentSource.getElementById("email-confirm-fields");
+  const emailProvider = documentSource.getElementById("email-provider");
+  const emailPurchase = documentSource.getElementById("email-purchase-key");
+  const emailCode = documentSource.getElementById("email-code");
+  const emailRequestButton = documentSource.getElementById("email-request-button");
+  const emailVerifyButton = documentSource.getElementById("email-verify-button");
+  const emailConfirmButton = documentSource.getElementById("email-confirm-button");
+  const emailConfirmation = documentSource.getElementById("email-replace-confirmation");
+  const emailCancel = documentSource.getElementById("email-recovery-cancel");
+  let emailRequestId = null;
+  function replaceEmailFragment(requestId) {
+    // Only a non-secret UUID enters browser history; never a code, proof or credential.
+    windowSource.history.replaceState(null, "", emailRecoveryFragment(requestId));
+  }
 
   let currentOperation = config?.initialOperation ?? "claim";
   let currentProvider = config?.initialProvider ?? "gumroad";
@@ -645,6 +720,8 @@ export function startSetupApplication({
   }
 
   function showVerificationView() {
+    emailPanel.hidden = true;
+    emailOpen.hidden = currentOperation !== "reissue";
     const copy = operationCopy();
     setupEyebrow.textContent = copy.eyebrow;
     setupTitle.textContent = copy.title;
@@ -682,6 +759,7 @@ export function startSetupApplication({
   }
 
   function showDeliveryView(operation) {
+    emailPanel.hidden = true;
     setupEyebrow.textContent = operation === "reissue" ? "Repository access replaced" : "Purchase verified";
     recoverySaveHelp.textContent = operation === "claim" && currentProvider === "gumroad"
       ? gumroadRecoverySaveHelp
@@ -695,6 +773,7 @@ export function startSetupApplication({
   }
 
   function showCompletedView() {
+    emailPanel.hidden = true;
     setupEyebrow.textContent = "Extension repository";
     setupTitle.textContent = "Setup complete";
     setupIntro.textContent = "The purchase-key form and one-time credentials have been cleared from this page.";
@@ -740,9 +819,16 @@ export function startSetupApplication({
     startNewButton.disabled = value || currentDelivery !== null;
     acknowledgeButton.disabled = value || !savedConfirmation.checked || currentDelivery === null;
     for (const button of taskButtons) button.disabled = value || currentDelivery !== null;
+    for (const control of [emailOpen, emailProvider, emailPurchase, emailCode, emailRequestButton, emailVerifyButton, emailCancel, emailConfirmation]) {
+      control.disabled = value || config === null || currentDelivery !== null;
+    }
+    emailConfirmButton.disabled = value || config === null || currentDelivery !== null || !emailConfirmation.checked;
   }
 
   function scrubCredentials() {
+    emailPurchase.value = "";
+    emailCode.value = "";
+    emailConfirmation.checked = false;
     currentDelivery = null;
     purchaseKeyInput.value = "";
     recoveryCredentialInput.value = "";
@@ -787,7 +873,9 @@ export function startSetupApplication({
   }
 
   function currentDocumentCanRender(epoch, operation, claimKey) {
-    const pendingExists = operation === "status"
+    const pendingExists = emailRequestId !== null && operation === "reissue"
+      ? readEmailReceiver(storage, emailRequestId, now())?.proof === claimKey
+      : operation === "status"
       ? true
       : operation === "claim"
         ? readClaimOperation(storage, claimKey, pendingProvider(operation)) !== null
@@ -810,6 +898,7 @@ export function startSetupApplication({
   }
 
   function currentOperationStorageName(operation, idempotencyKey) {
+    if (emailRequestId !== null && operation === "reissue") return EMAIL_RECEIVER_PREFIX + emailRequestId;
     return operation === "claim"
       ? claimStorageName(idempotencyKey, pendingProvider(operation))
       : operationStorageName(operation, idempotencyKey);
@@ -834,6 +923,11 @@ export function startSetupApplication({
   }
 
   function completeWithoutCredentials(claimKey, operation = currentOperation) {
+    if (emailRequestId && readEmailReceiver(storage, emailRequestId, now())?.proof === claimKey) {
+      storage.removeItem(EMAIL_RECEIVER_PREFIX + emailRequestId);
+      replaceEmailFragment(null);
+      emailRequestId = null;
+    }
     removeCurrentOperation(claimKey, operation);
     scrubCredentials();
     refreshPendingClaims();
@@ -845,6 +939,93 @@ export function startSetupApplication({
         ? "Your one-time credentials are no longer displayed. Keep your Recovery secret for extending updates or replacing access."
         : "Your one-time credentials are no longer displayed. Keep your Recovery secret to check Update Access or replace Repository access.",
     );
+  }
+
+  function showEmailRecovery(requestId = null) {
+    currentOperation = "reissue";
+    emailRequestId = requestId;
+    showVerificationView();
+    verificationPanel.hidden = true;
+    emailPanel.hidden = false;
+    setupTitle.textContent = "Recover Repository access";
+    setupIntro.textContent = "Verify your purchase email to receive new access information privately in this browser.";
+    emailRequestFields.hidden = requestId !== null;
+    const verified = requestId !== null && readEmailReceiver(storage, requestId, now())?.verified === true;
+    emailCodeFields.hidden = requestId === null || verified;
+    emailConfirmFields.hidden = !verified;
+    emailConfirmation.checked = false;
+    emailProvider.querySelector('option[value="lemonsqueezy"]').hidden = !config?.lemonEnabled;
+    setBusy(false);
+  }
+
+  async function submitEmailRecovery(action) {
+    if (busy || config === null || emailPanel.hidden) return;
+    clearMessage();
+    let body;
+    let receiver = null;
+    try {
+      if (action === "request") {
+        const key = emailPurchase.value.trim();
+        if (!key || key.length > 512 || CONTROL_CHARACTER_PATTERN.test(key)) {
+          setMessage("error", "Enter a valid purchase key", "Use the complete key from your purchase receipt."); return;
+        }
+        emailRequestId = cryptoSource.randomUUID();
+        body = { request_id: emailRequestId, initiator_proof: createIdempotencyKey(cryptoSource), provider: emailProvider.value, purchase_key: key };
+      } else {
+        receiver = readEmailReceiver(storage, emailRequestId, now());
+        if (action === "verify") {
+          if (!/^[0-9]{8}$/.test(emailCode.value.trim())) {
+            setMessage("error", "Enter the 8-digit code", "Use the code in the email for this recovery request."); return;
+          }
+          receiver ??= { proof: createIdempotencyKey(cryptoSource), verified: false, createdAt: now() };
+          persistEmailReceiver(storage, emailRequestId, receiver);
+          body = { request_id: emailRequestId, receiver_proof: receiver.proof, code: emailCode.value.trim() };
+        } else {
+          if (!receiver?.verified || !emailConfirmation.checked) return;
+          persistEmailReceiver(storage, emailRequestId, receiver);
+          body = { request_id: emailRequestId, receiver_proof: receiver.proof };
+        }
+      }
+    } catch {
+      setMessage("error", "This browser cannot save the retry reference", "No request was sent. Enable site storage and try again in this browser."); return;
+    }
+    const requestId = emailRequestId;
+    const operation = guard.begin();
+    setBusy(true);
+    const pending = postJson(fetchImplementation, `${config.serviceOrigin}/v1/recovery/email/${action}`, body, operation.signal);
+    body = null;
+    emailPurchase.value = "";
+    emailCode.value = "";
+    try {
+      const { response, payload } = await pending;
+      if (!guard.isCurrent(operation.epoch) || documentSource.visibilityState !== "visible") return;
+      if (action === "request" && response.status === 202) {
+        replaceEmailFragment(requestId);
+        showEmailRecovery(requestId);
+        setMessage("info", "Check your purchase email", "If this purchase is eligible, a code will arrive at its registered email address. Check spam too. If it does not arrive, wait a minute before requesting another email or contact support.");
+      } else if (action === "verify" && response.ok && payload?.status === "verified") {
+        persistEmailReceiver(storage, requestId, { ...receiver, verified: true });
+        showEmailRecovery(requestId);
+        setMessage("success", "Email verified", "Confirm replacement within 15 minutes. Your current access is still valid.");
+      } else if (action === "confirm" && response.ok) {
+        if (!currentDocumentCanRender(operation.epoch, "reissue", receiver.proof)) return;
+        const delivery = parseCredentialDelivery(payload);
+        if (delivery.kind === "delivered") renderDelivery("reissue", receiver.proof, delivery);
+        else if (delivery.kind === "terminal" && delivery.status === "delivered_and_acknowledged") completeWithoutCredentials(receiver.proof, "reissue");
+        else setMessage("error", "This delivery is no longer available", "Use your saved Recovery secret or contact support. Do not share any secret with support.");
+      } else if (response.status === 429 || response.status >= 500) {
+        setMessage("error", "Please try again shortly", "The result could not be confirmed. Stay in this browser and retry the same step.");
+      } else {
+        setMessage("error", action === "verify" ? "The code could not be verified" : "This recovery request could not be used",
+          "Check the code and the link from the same email. If the request has expired or access was already replaced, use your saved Recovery secret or request a new email.");
+      }
+    } catch {
+      if (guard.isCurrent(operation.epoch)) setMessage("error", "The result could not be confirmed", "Stay in this browser and retry the same step. Your retry reference has been kept.");
+    } finally {
+      const current = guard.isCurrent(operation.epoch);
+      guard.finish(operation.epoch);
+      if (current) setBusy(false);
+    }
   }
 
   async function submitOperation() {
@@ -981,12 +1162,8 @@ export function startSetupApplication({
           removeCurrentOperation(claimKey, submittedOperation);
           refreshPendingClaims();
         }
-        const title = submittedOperation === "claim"
-          ? "The purchase could not be used"
-          : submittedOperation === "renew"
-            ? "The update extension could not be applied"
-            : "The recovery secret could not be used";
-        setMessage("error", title, "Check the values and try again. If they should be valid, contact support.");
+        const rejection = rejectedOperationMessage(submittedOperation, category);
+        setMessage("error", rejection.title, rejection.body);
       } else {
         setMessage(
           "error",
@@ -1092,6 +1269,16 @@ export function startSetupApplication({
   }
 
   claimButton.addEventListener("click", submitOperation);
+  emailOpen.addEventListener("click", () => { guard.invalidate(); scrubCredentials(); clearMessage(); showEmailRecovery(); });
+  emailRequestButton.addEventListener("click", () => submitEmailRecovery("request"));
+  emailVerifyButton.addEventListener("click", () => submitEmailRecovery("verify"));
+  emailConfirmButton.addEventListener("click", () => submitEmailRecovery("confirm"));
+  emailConfirmation.addEventListener("change", () => setBusy(busy));
+  emailCancel.addEventListener("click", () => {
+    guard.invalidate(); scrubCredentials(); clearMessage(); showVerificationView(); refreshPendingClaims();
+    replaceEmailFragment(null);
+    emailRequestId = null;
+  });
   providerSelect.addEventListener("change", () => {
     if (busy || currentDelivery !== null || !config?.lemonEnabled) return;
     if (!["gumroad", "lemonsqueezy"].includes(providerSelect.value)) return;
@@ -1118,6 +1305,8 @@ export function startSetupApplication({
       if (busy || currentDelivery !== null || !SETUP_OPERATIONS.includes(button.dataset.operation)) return;
       guard.invalidate();
       currentOperation = button.dataset.operation;
+      emailRequestId = null;
+      replaceEmailFragment(null);
       startNew = false;
       scrubCredentials();
       clearMessage();
@@ -1181,6 +1370,27 @@ export function startSetupApplication({
     setBusy(false);
   });
 
+  // Opening a second email link in an existing tab is a same-document navigation.
+  // Discard the previous request and any late response before switching receivers.
+  function followEmailFragment() {
+    if (config === null) return;
+    const requestId = emailRecoveryRequestId(windowSource.location.hash);
+    if (requestId === emailRequestId) return;
+    guard.invalidate();
+    scrubCredentials();
+    clearMessage();
+    emailRequestId = null;
+    setBusy(false);
+    try {
+      if (requestId !== null) showEmailRecovery(requestId);
+      else { showVerificationView(); refreshPendingClaims(); }
+    } catch {
+      setMessage("error", "Browser storage is unavailable", "No request will be sent from this browser.");
+    }
+  }
+  windowSource.addEventListener("hashchange", followEmailFragment);
+  windowSource.addEventListener("popstate", followEmailFragment);
+
   windowSource.addEventListener("pageshow", () => {
     currentOperation = config?.initialOperation ?? "claim";
     currentProvider = config?.initialProvider ?? "gumroad";
@@ -1188,6 +1398,8 @@ export function startSetupApplication({
     showVerificationView();
     try {
       refreshPendingClaims();
+      const requestId = emailRecoveryRequestId(windowSource.location.hash);
+      if (requestId !== null && config !== null) showEmailRecovery(requestId);
     } catch {
       setMessage("error", "Browser storage is unavailable", "No claim will be sent from this browser.");
     }
@@ -1195,7 +1407,9 @@ export function startSetupApplication({
 
   documentSource.addEventListener("visibilitychange", () => {
     if (documentSource.visibilityState !== "visible" || currentDelivery === null) return;
-    const pendingOperation = currentDelivery.operation === "claim"
+    const pendingOperation = emailRequestId !== null
+      ? readEmailReceiver(storage, emailRequestId, now())
+      : currentDelivery.operation === "claim"
       ? readClaimOperation(storage, currentDelivery.claimKey, pendingProvider(currentDelivery.operation))
       : readMutationOperation(storage, currentDelivery.operation, currentDelivery.claimKey);
     if (pendingOperation === null) {
@@ -1219,6 +1433,8 @@ export function startSetupApplication({
   try {
     showVerificationView();
     refreshPendingClaims();
+    const requestId = emailRecoveryRequestId(windowSource.location.hash);
+    if (requestId !== null) showEmailRecovery(requestId);
   } catch {
     claimButton.disabled = true;
     setMessage("error", "Browser storage is unavailable", "No claim will be sent. Enable site storage or use another browser profile.");
