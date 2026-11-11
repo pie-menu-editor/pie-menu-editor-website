@@ -451,6 +451,30 @@ export function formatUtcDate(instant) {
   }).format(new Date(canonical));
 }
 
+/**
+ * Copy for a terminal 403 on a setup operation. `sale_already_claimed` is only
+ * returned after the provider accepted the key, so the customer must be sent to
+ * the replacement flow instead of being told to re-check a valid value.
+ */
+export function rejectedOperationMessage(operation, category) {
+  if (operation === "claim" && category === "sale_already_claimed") {
+    return {
+      title: "This purchase is already set up",
+      body: "Your purchase key is valid, but Repository setup runs only once per purchase. "
+        + "To get a new Repository token, open Replace access and use your Recovery secret, "
+        + "or select \"I lost my Recovery secret\" there.",
+    };
+  }
+  return {
+    title: operation === "claim"
+      ? "The purchase could not be used"
+      : operation === "renew"
+        ? "The update extension could not be applied"
+        : "The recovery secret could not be used",
+    body: "Check the values and try again. If they should be valid, contact support.",
+  };
+}
+
 async function boundedJson(response) {
   const declaredLength = Number(response.headers.get("Content-Length"));
   if (Number.isFinite(declaredLength) && declaredLength > MAX_RESPONSE_BYTES) {
@@ -1138,12 +1162,8 @@ export function startSetupApplication({
           removeCurrentOperation(claimKey, submittedOperation);
           refreshPendingClaims();
         }
-        const title = submittedOperation === "claim"
-          ? "The purchase could not be used"
-          : submittedOperation === "renew"
-            ? "The update extension could not be applied"
-            : "The recovery secret could not be used";
-        setMessage("error", title, "Check the values and try again. If they should be valid, contact support.");
+        const rejection = rejectedOperationMessage(submittedOperation, category);
+        setMessage("error", rejection.title, rejection.body);
       } else {
         setMessage(
           "error",
